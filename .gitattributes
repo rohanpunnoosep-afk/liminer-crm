@@ -1,0 +1,11 @@
+# Normalize line endings across machines so testers on Windows/macOS/Linux
+# don't get spurious whole-file diffs. Git stores LF internally and checks
+# out the platform-native ending.
+* text=auto
+
+# Treat these as binary (never modify line endings)
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary

@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Liminer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Liminer</div>
+    <div class="session" id="sessionBox" hidden>
+      <span id="sessionEmail"></span>
+      <button type="button" class="btn btn-ghost" id="btnLogout">Log out</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="loginView" class="view login-view">
+      <form id="loginForm" class="login-card" autocomplete="on">
+        <h1>Sign in</h1>
+        <p class="subtitle">Enter your work email to access your workflows.</p>
+        <label for="loginEmail">Email</label>
+        <input type="email" id="loginEmail" name="email" placeholder="you@fund.com" autocomplete="email" required />
+        <div id="loginError" class="error-text" role="alert" hidden></div>
+        <button type="submit" class="btn btn-primary" id="btnLogin">Log in</button>
+        <button type="button" class="btn btn-link" id="btnShowOnboard">Create an account</button>
+      </form>
+    </section>
+
+    <section id="onboardView" class="view onboard-view" hidden>
+      <div class="onboard-wizard panel">
+        <button type="button" class="btn btn-link" id="btnShowLogin">&larr; Back to log in</button>
+        <h1>Create your account</h1>
+        <ol class="step-indicator" id="stepIndicator">
+          <li data-step="1">1 Fund details</li>
+          <li data-step="2">2 Spreadsheet</li>
+          <li data-step="3">3 Review mapping</li>
+          <li data-step="4">4 Confirm changes</li>
+        </ol>
+
+        <div id="obError" class="error-text" role="alert" hidden></div>
+
+        <div id="onboardStep1" class="ob-step">
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="obEmail">Email</label>
+              <input type="email" id="obEmail" placeholder="you@fund.com" required />
+            </div>
+            <div class="form-field">
+              <label for="obFundName">Fund name</label>
+              <input type="text" id="obFundName" placeholder="Acme Ventures" required />
+            </div>
+            <div class="form-field">
+              <label for="obInternalFundName">Internal fund name</label>
+              <input type="text" id="obInternalFundName" placeholder="Acme Ventures Fund II" />
+            </div>
+            <div class="form-field">
+              <label for="obInternalWebsite">Internal website</label>
+              <input type="text" id="obInternalWebsite" placeholder="https://acme.vc" />
+            </div>
+            <div class="form-field">
+              <label for="obInternalNames">Internal team names</label>
+              <span class="field-hint">Separate with | — Don Smith|Jace Wang</span>
+              <input type="text" id="obInternalNames" placeholder="Don Smith|Jace Wang" />
+            </div>
+            <div class="form-field">
+              <label for="obInternalEmails">Internal team emails</label>
+              <span class="field-hint">Separate with | — don@acme.vc|jace@acme.vc</span>
+              <input type="text" id="obInternalEmails" placeholder="don@acme.vc|jace@acme.vc" />
+            </div>
+            <div class="form-field">
+              <label for="obSectorTags">Sector tags</label>
+              <span class="field-hint">Separate with | — Fintech|Healthcare</span>
+              <input type="text" id="obSectorTags" placeholder="Fintech|Healthcare" />
+            </div>
+            <div class="form-field">
+              <label for="obMicrosectorTags">Microsector tags</label>
+              <span class="field-hint">Separate with | — Payments|Insurtech</span>
+              <input type="text" id="obMicrosectorTags" placeholder="Payments|Insurtech" />
+            </div>
+            <div class="form-field">
+              <label for="obGeography">Geography</label>
+              <span class="field-hint">Separate with | — US|Canada</span>
+              <input type="text" id="obGeography" placeholder="US|Canada" />
+            </div>
+            <div class="form-field">
+              <label for="obStages">Stages</label>
+              <span class="field-hint">Separate with | — Seed|Series A</span>
+              <input type="text" id="obStages" placeholder="Seed|Series A" />
+            </div>
+            <div class="form-field form-field-wide">
+              <label for="obThesis">Investment thesis</label>
+              <input type="text" id="obThesis" placeholder="What does this fund look for?" />
+            </div>
+          </div>
+          <div class="ob-actions">
+            <button type="button" class="btn btn-primary" id="btnObNext1">Next</button>
+          </div>
+        </div>
+
+        <div id="onboardStep2" class="ob-step" hidden>
+          <div class="form-grid">
+            <div class="form-field form-field-wide">
+              <label for="obSpreadsheetId">Spreadsheet ID</label>
+              <span class="field-hint">The ID from your Google Sheets URL</span>
+              <input type="text" id="obSpreadsheetId" placeholder="1AbCDefGhIjKLmnoPQRstuv" required />
+            </div>
+            <div class="form-field form-field-wide">
+              <label for="obTabNames">Possible tab names</label>
+              <span class="field-hint">Separate with | — CRM|Email Intake</span>
+              <input type="text" id="obTabNames" placeholder="CRM|Email Intake" required />
+            </div>
+          </div>
+          <div class="ob-actions">
+            <button type="button" class="btn btn-ghost-light" id="btnObBack2">Back</button>
+            <button type="button" class="btn btn-primary" id="btnObDetect">Detect schema</button>
+          </div>
+        </div>
+
+        <div id="onboardStep3" class="ob-step" hidden>
+          <div id="obReviewTabs" class="review-tabs"></div>
+          <div id="obReviewGrid" class="review-grid"></div>
+          <div class="ob-actions">
+            <button type="button" class="btn btn-ghost-light" id="btnObBack3">Back</button>
+            <button type="button" class="btn btn-primary" id="btnObPreview">Preview changes</button>
+          </div>
+        </div>
+
+        <div id="onboardStep4" class="ob-step" hidden>
+          <p id="obPreviewSummary" class="preview-summary"></p>
+          <div class="preview-columns">
+            <div class="preview-list-block">
+              <h3>Main tab</h3>
+              <ul id="obPreviewMain" class="preview-list"></ul>
+            </div>
+            <div class="preview-list-block">
+              <h3>Intake tab</h3>
+              <ul id="obPreviewIntake" class="preview-list"></ul>
+            </div>
+          </div>
+          <p id="obDividerNote" class="divider-note"></p>
+          <div class="ob-actions">
+            <button type="button" class="btn btn-ghost-light" id="btnObBack4">Back</button>
+            <button type="button" class="btn btn-primary" id="btnObConfirm">Confirm &amp; create account</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="dashboardView" class="view dashboard-view" hidden>
+      <section class="panel dashboard-nav-panel">
+        <button type="button" class="btn btn-ghost-light" id="btnShowDocuments">Documents</button>
+      </section>
+
+      <section class="panel">
+        <h2>Workflows</h2>
+        <div id="workflow-grid" class="workflow-grid"></div>
+      </section>
+
+      <section class="panel plan-panel" id="workflowPlanPanel" hidden>
+        <h2>Preview: <span id="planWorkflowName"></span></h2>
+        <p id="planSummary" class="preview-summary"></p>
+        <div class="preview-list-block">
+          <h3>Columns that will change</h3>
+          <ul id="planColumns" class="preview-list"></ul>
+        </div>
+        <div class="ob-actions">
+          <button type="button" class="btn btn-ghost-light" id="btnPlanCancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="btnPlanConfirm">Run it</button>
+        </div>
+      </section>
+
+      <section class="panel output-panel">
+        <button type="button" class="output-toggle" id="btnToggleOutput" aria-expanded="true" aria-controls="outputBody">
+          <span>Job output</span>
+          <span class="chevron" id="outputChevron">&#9660;</span>
+        </button>
+        <div id="outputBody" class="output-body">
+          <div class="output-meta">
+            <span id="outputWorkflowName" class="output-workflow">No job run yet</span>
+            <span id="outputStatusPill" class="status-pill" aria-live="polite"></span>
+            <span id="outputDuration" class="output-duration"></span>
+            <span id="outputCost" class="output-duration"></span>
+            <span id="outputSummary" class="output-summary"></span>
+          </div>
+          <pre id="outputPre" class="output-pre"></pre>
+
+          <h3 class="history-title">Recent jobs</h3>
+          <ul id="historyList" class="history-list"></ul>
+        </div>
+      </section>
+
+      <section class="panel danger-panel">
+        <details>
+          <summary>Danger zone</summary>
+          <div class="danger-content">
+            <div class="danger-item">
+              <div class="danger-text">
+                <h3>Reset my account</h3>
+                <p>Delete your account and start over. You'll need to re-onboard after.</p>
+              </div>
+              <div class="danger-input-group">
+                <input type="text" id="resetConfirmEmail" placeholder="Type your email to confirm" />
+                <button type="button" class="btn btn-danger" id="btnReset" disabled>Reset account</button>
+              </div>
+              <div id="resetError" class="error-text" hidden role="alert"></div>
+              <div id="resetSuccess" class="success-text" hidden role="alert"></div>
+            </div>
+          </div>
+        </details>
+      </section>
+    </section>
+
+    <section id="documentsView" class="view documents-view" hidden>
+      <button type="button" class="btn btn-link" id="btnDocumentsBack">&larr; Back to dashboard</button>
+
+      <section class="panel">
+        <h2>Documents</h2>
+        <div id="briefsList" class="briefs-list"></div>
+        <p id="briefsEmpty" class="empty-note" hidden>
+          Investor briefs will appear here after the Investor Brief workflow runs.
+        </p>
+      </section>
+
+      <section class="panel" id="briefDetailPanel" hidden>
+        <div class="brief-detail-header">
+          <h2 id="briefDetailTitle"></h2>
+          <button type="button" class="btn btn-ghost-light" id="btnDownloadBriefPdf">Download PDF</button>
+        </div>
+        <p id="briefDetailMeta" class="brief-detail-meta"></p>
+
+        <div class="brief-section" id="briefSectionExecutiveSummary" hidden>
+          <h3>Executive Summary</h3>
+          <p id="briefExecutiveSummaryText"></p>
+        </div>
+
+        <div class="brief-section" id="briefSectionContact" hidden>
+          <h3>Contact &amp; Firm Profile</h3>
+          <dl id="briefContactFields" class="brief-fields"></dl>
+        </div>
+
+        <div class="brief-section" id="briefSectionMarket" hidden>
+          <h3>Market Intelligence</h3>
+          <dl id="briefMarketFields" class="brief-fields"></dl>
+        </div>
+
+        <div class="brief-section" id="briefSectionRelationship" hidden>
+          <h3>Relationship Summary</h3>
+          <dl id="briefRelationshipFields" class="brief-fields"></dl>
+        </div>
+
+        <div class="brief-section" id="briefSectionCallPrep" hidden>
+          <h3>Call Preparation</h3>
+          <div id="briefCallPrepBlocks"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
