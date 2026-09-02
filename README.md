@@ -42,8 +42,7 @@ frontend with no build step.
 
 ## How a GP uses Liminer
 
-The GP's side of the system is a sequence, not a dashboard. Each stage feeds the
-next, and every stage that touches the CRM is previewable before it runs.
+Each stage feeds the next, and every stage that touches the CRM is previewable before it runs.
 
 ```mermaid
 flowchart TB
