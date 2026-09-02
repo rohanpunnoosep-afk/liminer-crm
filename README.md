@@ -40,60 +40,122 @@ frontend with no build step.
 
 ---
 
+## How a GP uses Liminer
+
+The GP's side of the system is a sequence, not a dashboard. Each stage feeds the
+next, and every stage that touches the CRM is previewable before it runs.
+
+```mermaid
+flowchart TB
+    subgraph S1["1 · Onboard (once)"]
+        CONNECT["GP connects their<br/>Google Sheet CRM"]
+        DETECT["AI schema detection<br/>proposed column mapping"]
+        COMMIT["GP reviews · provisions<br/>'… (Liminer)' columns"]
+        CONNECT --> DETECT --> COMMIT
+    end
+
+    subgraph S2["2 · Capture the relationship"]
+        GMAIL["Labelled Gmail threads<br/>GP ↔ prospective LP"]
+        STAGE["Relevance filter<br/>staged for review"]
+        GMAIL --> STAGE
+    end
+
+    subgraph S3["3 · Write it into the CRM"]
+        RECORD["Last contact date · contacts<br/>email summary · conversation maturity"]
+    end
+
+    subgraph S4["4 · Enrich the prospect"]
+        PUB["Public registers<br/>EDGAR · IAPD · IRS 990 · FCA · ESMA"]
+        WEB["Websites · LinkedIn · news"]
+        IND["Indicators →<br/>Thesis · Resource · Timing"]
+        PUB --> IND
+        WEB --> IND
+    end
+
+    subgraph S5["5 · Analyze and report"]
+        SCORE["Fit · Resource · Timing scores"]
+        SUM["Relationship summary<br/>unfilled promises · open topics"]
+        BRIEF["PDF investor brief<br/>data · analysis · next steps"]
+        SCORE --> BRIEF
+        SUM --> BRIEF
+    end
+
+    subgraph S6["6 · Act, then repeat"]
+        PRIO["Priority queue by Strategic Value<br/>× Action Urgency"]
+        NEXT["Recommended follow-ups<br/>and topics to raise"]
+        SCOUT["Investor Scout appends<br/>new LP candidates as Cold"]
+        PRIO --> NEXT
+    end
+
+    COMMIT --> GMAIL
+    STAGE --> RECORD
+    RECORD --> IND
+    IND --> SCORE
+    RECORD --> SUM
+    BRIEF --> PRIO
+    NEXT -.->|"GP emails the LP"| GMAIL
+    SCOUT -.->|"new rows enter the cycle"| IND
+```
+
+Onboarding happens once. Stages 2–6 are re-run on a cadence: new email lands,
+the CRM row updates, enrichment refreshes, scores move, and the follow-up queue
+reorders itself.
+
+---
+
 ## Notable Constraints
 
+**The client's database is their own spreadsheet.**
+- No schema you control, no migration, no transaction — and the GP edits the
+  sheet by hand while a job is running.
+- Column order differs per fund and tab names drift (`"LP CRM"` becomes
+  `" LP CRM "`), so every read builds a header map and resolves by name. Nothing
+  addresses a column by index.
+- Each client's detected schema lives in `CRMRegistry` and loads into a
+  `SessionContext` at login, so processors work against that tenant's mapping
+  rather than a global one.
 
+**LLM calls cost real money per run.**
+- `CostMeter` prices every OpenAI call by model and tokens, aggregates across a
+  parallel run, and `CostCeilingExceededException` aborts at a hard ceiling
+  (`LIMINER_MAX_RUN_USD`) rather than discovering the bill later.
+- Work is batched across bounded thread pools and several queues (row work,
+  snapshot writes, scout prefetch) so calls overlap instead of serializing.
+- Responses are cached: `ScrapeCache` deduplicates within a run,
+  `ScoutFitProfileCache` persists across runs *and* clients — a candidate
+  extracted once for client A costs $0 for client B.
 
-**The client's database is their own spreadsheet.** There is no schema you control,
-no migration, and no transaction. Column order differs per fund, tab names drift
-(`"LP CRM"` becomes `" LP CRM "`), and the GP edits the sheet by hand while your
-job is running. Every read builds a header map first and resolves columns by
-name; nothing addresses a column by index. Each client's detected schema is
-stored in a registry (`CRMRegistry`, backed by a user database sheet) and loaded
-back into a `SessionContext` when that client logs in, so every processor works
-against that tenant's own column mapping rather than a global one.
+**Data is sparse and scattered.**
+- No single source describes an LP well; filings are stale, incomplete, or
+  missing entirely.
+- Many independent indicators (regulatory AUM, Form ADV strategy, IRS 990
+  assets, fund close timing, deal velocity, headcount proxy, thesis fit) are
+  scored separately and read in aggregate.
+- One bad source moves the score a little instead of producing a confidently
+  wrong answer.
 
-**LLM calls cost real money per run.** `CostMeter` prices every OpenAI call by
-model and token count, aggregates across a parallel run, and
-`CostCeilingExceededException` aborts the run at a hard ceiling
-(`LIMINER_MAX_RUN_USD`) rather than discovering the bill later. The meter binds
-to a thread and propagates into pool threads via `CostMeter.wrap`. Beyond
-metering, the work itself is batched: rows are processed through bounded thread
-pools with several queues (row work, snapshot writes, scout prefetch) so calls
-overlap instead of running one at a time, and responses are cached. `ScrapeCache`
-deduplicates fetches and model calls within a run, and `ScoutFitProfileCache`
-persists profile extractions across runs and across clients — a candidate
-extracted once for client A costs $0 for client B. Together this is a large speed
-and cost win on every workflow that touches the same funds twice.
+**Protecting against messing up a client's data.**
+- This is a fund's live fundraising pipeline. Corrupting it damages the raise,
+  so nothing is written speculatively.
+- Never a rectangular write to a client tab: the Sheets API accepts `A2:Z400`
+  and silently overwrites the GP's own notes in column M. Liminer finds the
+  affected row span, then reads and writes **one column at a time** — a
+  constraint that shapes `SheetsIOPort`, `CrmUpdater`, and every processor.
+- Hidden tabs Liminer owns outright (`SnapshotStore`, `ScoutLedger`) may be read
+  as rectangles; the code names the exception at each site.
+- Every side-effecting workflow has a `/plan` endpoint that runs the same
+  eligibility logic as `/run` and returns exactly what would change — eligible
+  rows, per-column diffs — while writing nothing, so the GP previews first.
+  `WorkflowPreviewTest` asserts `/plan` is byte-identical twice over and that
+  the fake sheet port never sees a write.
 
-**Data is sparse and scattered.** No single source describes an LP well. Liminer
-runs many independent indicators — regulatory AUM, Form ADV strategy, IRS 990
-assets, fund close timing, deal velocity, headcount proxy, thesis fit — and takes
-the aggregate reading rather than trusting any one of them. A missing filing, a
-stale website, or one bad scrape moves the score a little instead of producing a
-confidently wrong answer.
-
-**Protecting against messing up a client's data.** This is real financial data: a
-fund's live fundraising pipeline. Corrupting it is not a cosmetic bug, it is
-damage to the GP's raise. So Liminer never writes a rectangle to a client tab —
-the Sheets API happily accepts `A2:Z400` and overwrites every cell in it,
-including the GP's own notes in column M. Instead it finds the affected row span,
-then reads and writes **one column at a time**. That constraint shapes
-`SheetsIOPort`, `CrmUpdater`, and every processor that touches a CRM. Internal
-hidden tabs that Liminer owns outright (`SnapshotStore`, `ScoutLedger`) are
-allowed full-rectangle reads, and the code says so at each exception. On top of
-that, every workflow with side effects has a `/plan` endpoint that runs the same
-eligibility logic as `/run` and returns exactly what would change — eligible row
-count, per-column diffs — while writing nothing, so the GP previews the change
-before it happens. `WorkflowPreviewTest` asserts that calling `/plan` twice is
-byte-identical and that the fake sheet port never sees a write.
-
-**Storing data in spreadsheets.** Liminer does not use advanced database
-techniques. Structured results are serialized as JSON into a single spreadsheet
-cell, and when that information is needed again a reader parses the JSON elements
-back into a value object (`InvestorProfile.fromIntelligenceJson`,
-`RelationshipSummary.toJSON`). Cell values are capped below the Google Sheets
-50,000-character limit so a long evidence blob can never fail a whole write.
+**Storing data in spreadsheets.**
+- No advanced database techniques: structured results are serialized as JSON
+  into a single cell.
+- A reader parses those JSON elements back into value objects
+  (`InvestorProfile.fromIntelligenceJson`, `RelationshipSummary.toJSON`).
+- Cell values are capped below the Google Sheets 50,000-character limit so a
+  long evidence blob can never fail an entire write.
 
 ---
 
