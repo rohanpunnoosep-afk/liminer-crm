@@ -4,6 +4,8 @@
 
 **Liminer is an Agentic Partner for VC Fundraising.**
 
+
+
 Liminer's deliverables for General Partners (GPs) of VC funds:
 
 - **Connects to the GP's workflow**
