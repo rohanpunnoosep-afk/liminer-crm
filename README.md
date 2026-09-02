@@ -42,7 +42,7 @@ frontend with no build step.
 
 ## Notable Constraints
 
-The interesting constraints in this system are not the AI parts.
+
 
 **The client's database is their own spreadsheet.** There is no schema you control,
 no migration, and no transaction. Column order differs per fund, tab names drift
