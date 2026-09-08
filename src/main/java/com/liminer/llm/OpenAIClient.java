@@ -2,6 +2,8 @@ package com.liminer.llm;
 
 import com.liminer.billing.CostMeter;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import okhttp3.*;
 import org.json.JSONArray;
@@ -250,5 +252,171 @@ public class OpenAIClient
 
             throw new Exception("Could not extract text from OpenAI response.");
         }
+    }
+
+    public static final String EMBED_MODEL0 = "text-embedding-3-small";
+
+    public static float[] getEmbedding(String text0, int dims0) throws Exception
+    {
+        List<String> texts0 = new ArrayList<>();
+        texts0.add(text0);
+
+        return getEmbeddings(texts0, dims0).get(0);
+    }
+
+    public static List<float[]> getEmbeddings(List<String> texts0, int dims0) throws Exception
+    {
+        List<String> nonBlank0 = new ArrayList<>();
+
+        for (String text0 : texts0)
+        {
+            if (text0 != null && !text0.trim().isEmpty())
+            {
+                nonBlank0.add(text0);
+            }
+        }
+
+        if (nonBlank0.isEmpty())
+        {
+            return new ArrayList<>();
+        }
+
+        CostMeter activeMeter0 = CostMeter.current();
+
+        if (activeMeter0 != null)
+        {
+            activeMeter0.checkCeiling();
+        }
+
+        OkHttpClient client0 = new OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(240, TimeUnit.SECONDS)
+            .writeTimeout(240, TimeUnit.SECONDS)
+            .callTimeout(240, TimeUnit.SECONDS)
+            .build();
+
+        JSONObject body0 = new JSONObject();
+        body0.put("model", EMBED_MODEL0);
+
+        JSONArray input0 = new JSONArray();
+
+        for (String text0 : nonBlank0)
+        {
+            input0.put(text0);
+        }
+
+        body0.put("input", input0);
+        body0.put("dimensions", dims0);
+        body0.put("encoding_format", "float");
+
+        Request request0 = new Request.Builder()
+            .url("https://api.openai.com/v1/embeddings")
+            .addHeader("Authorization", "Bearer " + API_KEY)
+            .addHeader("Content-Type", "application/json")
+            .post(RequestBody.create(body0.toString(), MediaType.get("application/json")))
+            .build();
+
+        try (Response response0 = client0.newCall(request0).execute())
+        {
+            String responseBody0 = response0.body().string();
+
+            JSONObject json0 = new JSONObject(responseBody0);
+
+            if (!response0.isSuccessful())
+            {
+                System.out.println("OpenAI API Error:");
+                System.out.println(json0.toString(2));
+                throw new Exception("OpenAI API request failed with status: " + response0.code());
+            }
+
+            if (json0.has("error") && !json0.isNull("error"))
+            {
+                System.out.println("OpenAI API Error:");
+                System.out.println(json0.toString(2));
+                throw new Exception("OpenAI API returned an error.");
+            }
+
+            float[][] vectors0 = parseEmbeddingResponse(json0, nonBlank0.size(), dims0);
+
+            if (activeMeter0 != null)
+            {
+                activeMeter0.record(EMBED_MODEL0, parseEmbeddingPromptTokens(json0), 0);
+            }
+
+            List<float[]> result0 = new ArrayList<>();
+
+            for (float[] vector0 : vectors0)
+            {
+                result0.add(vector0);
+            }
+
+            return result0;
+        }
+    }
+
+    /**
+     * Parses the /v1/embeddings response body. data[i].index is not guaranteed to
+     * be in request order, so entries are placed by index rather than array position.
+     */
+    static float[][] parseEmbeddingResponse(JSONObject json0, int expectedCount0, int dims0) throws Exception
+    {
+        if (!json0.has("data") || json0.isNull("data"))
+        {
+            System.out.println("Unexpected OpenAI embeddings response:");
+            System.out.println(json0.toString(2));
+            throw new Exception("OpenAI embeddings response missing data.");
+        }
+
+        JSONArray data0 = json0.getJSONArray("data");
+
+        if (data0.length() != expectedCount0)
+        {
+            throw new Exception("OpenAI embeddings response returned " + data0.length()
+                + " embeddings, expected " + expectedCount0 + ".");
+        }
+
+        float[][] vectors0 = new float[expectedCount0][];
+
+        for (int i0 = 0; i0 < data0.length(); i0++)
+        {
+            JSONObject item0 = data0.getJSONObject(i0);
+            int index0 = item0.getInt("index");
+
+            if (index0 < 0 || index0 >= expectedCount0)
+            {
+                throw new Exception("OpenAI embeddings response returned out-of-range index: " + index0);
+            }
+
+            JSONArray embeddingArray0 = item0.getJSONArray("embedding");
+
+            if (embeddingArray0.length() != dims0)
+            {
+                throw new Exception("OpenAI embedding at index " + index0 + " has length "
+                    + embeddingArray0.length() + ", expected " + dims0 + ".");
+            }
+
+            float[] vector0 = new float[dims0];
+
+            for (int d0 = 0; d0 < dims0; d0++)
+            {
+                vector0[d0] = (float) embeddingArray0.getDouble(d0);
+            }
+
+            vectors0[index0] = vector0;
+        }
+
+        return vectors0;
+    }
+
+    static long parseEmbeddingPromptTokens(JSONObject json0)
+    {
+        JSONObject usage0 = json0.optJSONObject("usage");
+
+        if (usage0 == null)
+        {
+            return 0;
+        }
+
+        return usage0.optLong("prompt_tokens", 0);
     }
 }

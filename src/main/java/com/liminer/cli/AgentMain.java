@@ -17,6 +17,7 @@ import com.liminer.llm.ToolRegistry;
 import com.liminer.llm.ToolSpec;
 import com.liminer.pipeline.LPEnrichmentProcessor;
 import com.liminer.pipeline.LPScoreProcessor;
+import com.liminer.pipeline.ProfileEmbeddingProcessor;
 import com.liminer.pipeline.RelationshipSummaryProcessor;
 import com.liminer.scout.CandidateDiscoveryProcessor;
 import com.liminer.scout.CandidateInvestor;
@@ -47,6 +48,7 @@ public class AgentMain
         System.out.println("update crm");
         System.out.println("delete user");
         System.out.println("enrich lps");
+        System.out.println("embed lps");
         System.out.println("discover candidates");
         System.out.println("score candidates");
         System.out.println("prioritize relationships");
@@ -331,6 +333,31 @@ public class AgentMain
             System.out.println("Starting LP enrichment...");
 
             String result0 = LPEnrichmentProcessor.enrichLpRows(context0);
+
+            System.out.println(result0);
+
+            scanner0.close();
+            System.exit(0);
+        }
+
+        // ============================================================
+        // 17. EMBED LPS
+        // ============================================================
+
+        else if (prompt0.equalsIgnoreCase("embed lps") || prompt0.equals("17"))
+        {
+            SessionContext context0 = loginFromTerminal(scanner0);
+
+            if (context0 == null)
+            {
+                scanner0.close();
+                System.exit(0);
+            }
+
+            System.out.println();
+            System.out.println("Starting LP profile embedding...");
+
+            String result0 = ProfileEmbeddingProcessor.embedLpRows(context0);
 
             System.out.println(result0);
 

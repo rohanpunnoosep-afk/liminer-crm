@@ -190,6 +190,24 @@ public class CRMFieldRegistry
         reg("mainTabLastBriefGeneratedCol", "Last Brief Generated", "Last Brief Generated", "date", "main", true, false, true, "", "");
 
         // ============================================================
+        // LP PROFILE EMBEDDING FIELDS
+        // Produced by the LP profile vector-encoding workflow (task chain
+        // 0170-0176), which turns a CanonicalProfile into a fixed-layout
+        // weighted block vector so LP-to-GP fit becomes a dot product.
+        // "Profile Vector" holds the base64 float16 encoding of the vector.
+        // "Profile Vector Meta" carries the block layout and encoder version
+        // ALONGSIDE the vector, not just in code, so a stored vector stays
+        // decodable after the layout changes and a version mismatch triggers
+        // a re-encode instead of a silently wrong dot product.
+        // ============================================================
+
+        reg("mainTabConnectionPointCol", "Connection Point", "Connection Point", "text", "main", true, false, true, "", "");
+        reg("mainTabConnectionPointJsonCol", "Connection Point JSON", "Connection Point JSON", "json", "main", true, false, true, "", "");
+        reg("mainTabCanonicalProfileJsonCol", "Canonical Profile JSON", "Canonical Profile JSON", "json", "main", true, false, true, "", "");
+        reg("mainTabProfileVectorCol", "Profile Vector", "Profile Vector", "text", "main", true, false, true, "", "");
+        reg("mainTabProfileVectorMetaCol", "Profile Vector Meta", "Profile Vector Meta", "json", "main", true, false, true, "", "");
+
+        // ============================================================
         // DIVIDER (dividerlists.md steps 1-2)
         // A single, narrow sentinel column that separates the GP's human-facing
         // columns (left) from Liminer's machine-generated enrichment (right).
@@ -507,6 +525,15 @@ public class CRMFieldRegistry
         "mainTabScoutEvidenceCol"
     };
 
+    // The five LP profile embedding columns the vector-encoding workflow writes.
+    private static final String[] PROFILE_EMBEDDING_KEYS = {
+        "mainTabConnectionPointCol",
+        "mainTabConnectionPointJsonCol",
+        "mainTabCanonicalProfileJsonCol",
+        "mainTabProfileVectorCol",
+        "mainTabProfileVectorMetaCol"
+    };
+
     // The Tier-1 priority-signal columns (priorityscoringv2 §7.2). The two human
     // projections (Strategic Value, Action Urgency) plus Priority Reason are human
     // side but the Tier-1 processor still needs them provisioned; ensureColumns
@@ -665,6 +692,14 @@ public class CRMFieldRegistry
     {
         ensureColumnsRightOfDivider(context0, spreadsheetId0, mainTabName0,
             headerRow0, headerMap0, SCOUT_EVIDENCE_KEYS);
+    }
+
+    public static void ensureProfileEmbeddingColumns(
+        SessionContext context0, String spreadsheetId0, String mainTabName0,
+        int headerRow0, HashMap<String, Integer> headerMap0) throws Exception
+    {
+        ensureColumnsRightOfDivider(context0, spreadsheetId0, mainTabName0,
+            headerRow0, headerMap0, PROFILE_EMBEDDING_KEYS);
     }
 
     // Provision the Tier-1 priority-signal columns (priorityscoringv2 §7.2).

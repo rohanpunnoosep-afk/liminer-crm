@@ -175,6 +175,11 @@ public class CRMRegistry
 
         CRMFieldRegistry.ensurePrioritySignalColumns(
             context0, spreadsheetId0, mainTab0, headerRow0, headerMap0);
+
+        // LP profile embedding backfill (task chain 0170-0176) — existing users
+        // pick up the five machine columns on next login the same way.
+        CRMFieldRegistry.ensureProfileEmbeddingColumns(
+            context0, spreadsheetId0, mainTab0, headerRow0, headerMap0);
     }
 
     private static void ensureMainCol(

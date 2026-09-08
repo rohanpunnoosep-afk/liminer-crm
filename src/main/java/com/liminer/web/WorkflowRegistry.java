@@ -8,6 +8,7 @@ import com.liminer.enrich.BasicBackgroundChecker;
 import com.liminer.intake.EmailIntakeProcessor;
 import com.liminer.pipeline.LPEnrichmentProcessor;
 import com.liminer.pipeline.LPScoreProcessor;
+import com.liminer.pipeline.ProfileEmbeddingProcessor;
 import com.liminer.pipeline.RelationshipSummaryProcessor;
 import com.liminer.scout.CandidateDiscoveryProcessor;
 import com.liminer.scout.CandidateScoringProcessor;
@@ -194,6 +195,14 @@ public class WorkflowRegistry
             null,
             (context, params) -> LPEnrichmentProcessor.enrichLpRows(context),
             (context, params) -> LPEnrichmentProcessor.planEnrichment(context, paramInt(params, "maxRows", 25))));
+
+        registry.add(new WorkflowInfo(
+            "embed-lps",
+            "Embed LPs",
+            "Build canonical LP profiles and write their weighted block vectors.",
+            true,
+            null,
+            (context, params) -> ProfileEmbeddingProcessor.embedLpRows(context, paramInt(params, "maxRows", 25))));
 
         registry.add(new WorkflowInfo(
             "discover-candidates",

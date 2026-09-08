@@ -29,6 +29,7 @@ public class CostMeter
     private static final double GPT_4_1_MINI_COMPLETION_USD_PER_1M = 1.60;
     private static final double GPT_4_1_PROMPT_USD_PER_1M          = 2.00;
     private static final double GPT_4_1_COMPLETION_USD_PER_1M      = 8.00;
+    private static final double TEXT_EMBEDDING_3_SMALL_PROMPT_USD_PER_1M = 0.02;
 
     private static final Map<String, double[]> PRICES_PER_1M_TOKENS = new ConcurrentHashMap<>();
 
@@ -38,6 +39,8 @@ public class CostMeter
             new double[] { GPT_4_1_MINI_PROMPT_USD_PER_1M, GPT_4_1_MINI_COMPLETION_USD_PER_1M });
         PRICES_PER_1M_TOKENS.put("gpt-4.1",
             new double[] { GPT_4_1_PROMPT_USD_PER_1M, GPT_4_1_COMPLETION_USD_PER_1M });
+        PRICES_PER_1M_TOKENS.put("text-embedding-3-small",
+            new double[] { TEXT_EMBEDDING_3_SMALL_PROMPT_USD_PER_1M, 0.0 });
     }
 
     public static final double DEFAULT_CEILING_USD = 2.00;
