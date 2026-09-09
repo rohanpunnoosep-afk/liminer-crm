@@ -2,13 +2,9 @@ package com.liminer.enrich;
 
 import com.liminer.core.NewsItem;
 
-import java.net.URI;
+import java.io.InterruptedIOException;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -31,7 +27,6 @@ public class NewsClient
 {
     private static final String API_TOKEN0 = System.getenv("BRIGHT_DATA_API_TOKEN");
     private static final String SERP_ZONE0 = getEnvOrDefault("BRIGHT_DATA_SERP_ZONE", "serp_api2");
-    private static final HttpClient CLIENT0 = HttpClient.newHttpClient();
 
     // Patterns for extracting a date string from a news snippet.
     // Covers: "June 10, 2026", "10 Jun 2026", "2026-06-10", "Jun 10, 2026"
@@ -82,23 +77,19 @@ public class NewsClient
         body0.put("url", googleUrl0);
         body0.put("format", "raw");
 
-        HttpRequest request0 = HttpRequest.newBuilder()
-            .uri(URI.create("https://api.brightdata.com/request"))
-            .timeout(Duration.ofSeconds(20))
-            .header("Content-Type", "application/json")
-            .header("Authorization", "Bearer " + API_TOKEN0)
-            .POST(HttpRequest.BodyPublishers.ofString(body0.toString()))
-            .build();
-
         String responseBody0 = null;
         Exception lastError0 = null;
         for (int attempt0 = 1; attempt0 <= 2; attempt0++)
         {
             try
             {
-                HttpResponse<String> response0 = CLIENT0.send(
-                    request0, HttpResponse.BodyHandlers.ofString());
-                int status0 = response0.statusCode();
+                BrightDataHttp.Result response0 = BrightDataHttp.post(
+                    "https://api.brightdata.com/request",
+                    body0.toString(),
+                    API_TOKEN0,
+                    SERP_ZONE0,
+                    20L);
+                int status0 = response0.status;
                 if (status0 == 502 || status0 == 503 || status0 == 429)
                 {
                     lastError0 = new RuntimeException("transient news SERP status " + status0);
@@ -109,12 +100,12 @@ public class NewsClient
                 {
                     throw new RuntimeException(
                         "Bright Data news SERP failed. Status: " + status0
-                        + ". Body: " + response0.body());
+                        + ". Body: " + response0.body);
                 }
-                responseBody0 = response0.body();
+                responseBody0 = response0.body;
                 break;
             }
-            catch (java.net.http.HttpTimeoutException timeout0)
+            catch (InterruptedIOException timeout0)
             {
                 lastError0 = timeout0;
             }

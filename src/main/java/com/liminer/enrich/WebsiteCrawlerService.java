@@ -36,10 +36,6 @@ public class WebsiteCrawlerService {
         catch (NumberFormatException e0) { return default0; }
     }
 
-    private static final HttpClient client = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(15))
-            .build();
-
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
             System.out.println("Usage: java GenericWebsiteCrawler <websiteUrl>");
@@ -108,30 +104,27 @@ public class WebsiteCrawlerService {
                 + "\"format\":\"raw\""
                 + "}";
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create("https://api.brightdata.com/request"))
-                .timeout(Duration.ofSeconds(120))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + BRIGHT_DATA_API_TOKEN)
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
-
-        HttpResponse<String> response;
+        BrightDataHttp.Result response;
         BrightDataThrottle.acquire();
         try {
-            response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            int gateStatus0 = response.statusCode();
+            response = BrightDataHttp.post(
+                "https://api.brightdata.com/request",
+                body,
+                BRIGHT_DATA_API_TOKEN,
+                BRIGHT_DATA_ZONE,
+                120L);
+            int gateStatus0 = response.status;
             if (gateStatus0 == 429 || gateStatus0 == 502 || gateStatus0 == 503) {
                 BrightDataThrottle.noteThrottle();
             }
-        } catch (java.net.http.HttpTimeoutException timeout0) {
+        } catch (java.io.InterruptedIOException timeout0) {
             BrightDataThrottle.noteThrottle();
             throw timeout0;
         } finally {
             BrightDataThrottle.release();
         }
 
-        String responseBody0 = response.body();
+        String responseBody0 = response.body;
 
         if (responseBody0.startsWith("Request Failed"))
         {
@@ -143,11 +136,11 @@ public class WebsiteCrawlerService {
             throw new RuntimeException("Bright Data robots/immediate-access failure: " + responseBody0);
         }
 
-        int statusCode = response.statusCode();
+        int statusCode = response.status;
 
         if (statusCode < 200 || statusCode >= 300) {
             throw new RuntimeException("Bright Data request failed. Status: "
-                    + statusCode + ". Body: " + response.body());
+                    + statusCode + ". Body: " + response.body);
         }
 
         return responseBody0;

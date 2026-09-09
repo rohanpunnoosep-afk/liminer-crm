@@ -1,11 +1,7 @@
 package com.liminer.enrich;
 
-import java.net.URI;
+import java.io.InterruptedIOException;
 import java.net.URLEncoder;
-import java.time.Duration;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.regex.Matcher;
@@ -31,9 +27,6 @@ public class BrightDataSerpClient
 {
     private static final String BRIGHT_DATA_API_TOKEN0 = System.getenv("BRIGHT_DATA_API_TOKEN");
     private static final String BRIGHT_DATA_SERP_ZONE0 = getEnvOrDefault("BRIGHT_DATA_SERP_ZONE", "serp_api2");
-    private static final HttpClient CLIENT0 = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(15))
-            .build();
 
     public BrightDataSerpClient()
     {
@@ -62,14 +55,6 @@ public class BrightDataSerpClient
         body0.put("url", googleUrl0);
         body0.put("format", "raw");
 
-        HttpRequest request0 = HttpRequest.newBuilder()
-            .uri(URI.create("https://api.brightdata.com/request"))
-            .timeout(Duration.ofSeconds(20))
-            .header("Content-Type", "application/json")
-            .header("Authorization", "Bearer " + BRIGHT_DATA_API_TOKEN0)
-            .POST(HttpRequest.BodyPublishers.ofString(body0.toString()))
-            .build();
-
         // Up to 2 attempts: retry once on transient 502/503/429 or a timeout.
         // A short timeout keeps a stuck call from blowing the per-row budget.
         String responseBody0 = null;
@@ -78,11 +63,19 @@ public class BrightDataSerpClient
         {
             try
             {
-                HttpResponse<String> response0;
+                BrightDataHttp.Result response0;
                 BrightDataThrottle.acquire();
-                try { response0 = CLIENT0.send(request0, HttpResponse.BodyHandlers.ofString()); }
+                try
+                {
+                    response0 = BrightDataHttp.post(
+                        "https://api.brightdata.com/request",
+                        body0.toString(),
+                        BRIGHT_DATA_API_TOKEN0,
+                        BRIGHT_DATA_SERP_ZONE0,
+                        20L);
+                }
                 finally { BrightDataThrottle.release(); }
-                int status0 = response0.statusCode();
+                int status0 = response0.status;
                 if (status0 == 502 || status0 == 503 || status0 == 429)
                 {
                     BrightDataThrottle.noteThrottle();
@@ -94,12 +87,12 @@ public class BrightDataSerpClient
                 {
                     throw new RuntimeException(
                         "Bright Data SERP request failed. Status: " + status0
-                        + ". Body: " + response0.body());
+                        + ". Body: " + response0.body);
                 }
-                responseBody0 = response0.body();
+                responseBody0 = response0.body;
                 break;
             }
-            catch (java.net.http.HttpTimeoutException timeout0)
+            catch (InterruptedIOException timeout0)
             {
                 BrightDataThrottle.noteThrottle();
                 lastError0 = timeout0; // retry

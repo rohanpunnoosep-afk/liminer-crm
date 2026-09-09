@@ -1,10 +1,6 @@
 package com.liminer.enrich;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.time.Duration;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -38,10 +34,6 @@ public class BrightDataLinkedInClient
         "BRIGHT_DATA_LINKEDIN_COMPANY_DATASET_ID",
         "gd_l1vikfnt1wgvvqz95w"
     );
-
-    private static final HttpClient CLIENT0 = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(15))
-            .build();
 
     public BrightDataLinkedInClient()
     {
@@ -102,14 +94,6 @@ public class BrightDataLinkedInClient
             + datasetId0
             + "&format=json";
 
-        HttpRequest request0 = HttpRequest.newBuilder()
-            .uri(URI.create(endpoint0))
-            .timeout(Duration.ofSeconds(45))
-            .header("Content-Type", "application/json")
-            .header("Authorization", "Bearer " + API_TOKEN0)
-            .POST(HttpRequest.BodyPublishers.ofString(inputArray0.toString()))
-            .build();
-
         // Up to 2 attempts: retry once on transient 502/503/429 or a timeout.
         // LinkedIn scrapes are genuinely slower than SERP, so the timeout is higher.
         String body0 = null;
@@ -118,11 +102,19 @@ public class BrightDataLinkedInClient
         {
             try
             {
-                HttpResponse<String> response0;
+                BrightDataHttp.Result response0;
                 BrightDataThrottle.acquire();
-                try { response0 = CLIENT0.send(request0, HttpResponse.BodyHandlers.ofString()); }
+                try
+                {
+                    response0 = BrightDataHttp.post(
+                        endpoint0,
+                        inputArray0.toString(),
+                        API_TOKEN0,
+                        datasetId0,
+                        45L);
+                }
                 finally { BrightDataThrottle.release(); }
-                int status0 = response0.statusCode();
+                int status0 = response0.status;
                 if (status0 == 502 || status0 == 503 || status0 == 429)
                 {
                     BrightDataThrottle.noteThrottle();
@@ -134,12 +126,12 @@ public class BrightDataLinkedInClient
                 {
                     throw new RuntimeException(
                         "Bright Data LinkedIn scrape failed. Status: " + status0
-                        + ". Body: " + response0.body());
+                        + ". Body: " + response0.body);
                 }
-                body0 = response0.body();
+                body0 = response0.body;
                 break;
             }
-            catch (java.net.http.HttpTimeoutException timeout0)
+            catch (InterruptedIOException timeout0)
             {
                 BrightDataThrottle.noteThrottle();
                 lastError0 = timeout0; // retry
