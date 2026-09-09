@@ -25,12 +25,12 @@ import org.json.JSONObject;
  *   BRIGHT_DATA_API_TOKEN
  *
  * Optional env var:
- *   BRIGHT_DATA_SERP_ZONE   defaults to serp_api1
+ *   BRIGHT_DATA_SERP_ZONE   defaults to serp_api2
  */
 public class BrightDataSerpClient
 {
     private static final String BRIGHT_DATA_API_TOKEN0 = System.getenv("BRIGHT_DATA_API_TOKEN");
-    private static final String BRIGHT_DATA_SERP_ZONE0 = getEnvOrDefault("BRIGHT_DATA_SERP_ZONE", "serp_api1");
+    private static final String BRIGHT_DATA_SERP_ZONE0 = getEnvOrDefault("BRIGHT_DATA_SERP_ZONE", "serp_api2");
     private static final HttpClient CLIENT0 = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(15))
             .build();
@@ -54,7 +54,8 @@ public class BrightDataSerpClient
         String googleUrl0 = "https://www.google.com/search?q="
             + URLEncoder.encode(query0, StandardCharsets.UTF_8)
             + "&num="
-            + Math.max(maxResults0, 10);
+            + Math.max(maxResults0, 10)
+            + "&brd_json=1";
 
         JSONObject body0 = new JSONObject();
         body0.put("zone", BRIGHT_DATA_SERP_ZONE0);

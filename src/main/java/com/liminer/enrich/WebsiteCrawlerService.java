@@ -15,13 +15,19 @@ import java.util.regex.Pattern;
 public class WebsiteCrawlerService {
 
     private static final String BRIGHT_DATA_API_TOKEN = System.getenv("BRIGHT_DATA_API_TOKEN");
-    private static final String BRIGHT_DATA_ZONE = "web_unlocker1";
+    private static final String BRIGHT_DATA_ZONE = getEnvOrDefault("BRIGHT_DATA_UNLOCKER_ZONE", "web_unlocker2");
 
     // Max bio/website pages crawled per site. Bio info is usually on the home
     // page plus 1-3 team/about pages, and pages are crawled SEQUENTIALLY at up
     // to 120s each, so this is the single biggest lever on worst-case crawl
     // time. Default 4; tunable via env (BD_MAX_CRAWL_PAGES) without a recompile.
     private static final int MAX_PAGES_TO_SCRAPE = getEnvInt("BD_MAX_CRAWL_PAGES", 4);
+
+    private static String getEnvOrDefault(String name0, String default0) {
+        String raw0 = System.getenv(name0);
+        if (raw0 == null || raw0.trim().isEmpty()) { return default0; }
+        return raw0.trim();
+    }
 
     private static int getEnvInt(String name0, int default0) {
         String raw0 = System.getenv(name0);
