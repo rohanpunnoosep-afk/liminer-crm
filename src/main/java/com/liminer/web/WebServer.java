@@ -516,7 +516,14 @@ public class WebServer
                 array.put(info.toJson());
             }
 
-            writeJson(ctx, new JSONObject().put("workflows", array));
+            JSONArray processArray = new JSONArray();
+
+            for (WorkflowRegistry.ProcessInfo processInfo : workflowRegistry.processes())
+            {
+                processArray.put(processInfo.toJson());
+            }
+
+            writeJson(ctx, new JSONObject().put("workflows", array).put("processes", processArray));
         });
 
         app.post("/api/workflows/{id}/run", ctx ->

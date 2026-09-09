@@ -6,7 +6,11 @@ const $ = (id) => document.getElementById(id);
 
 let token = null;
 let workflows = [];
+let processes = [];
+let processGroups = [];
+let processRunning = false;
 let activeJobId = null;
+let activeStepResolve = null;
 let activePollHandle = null;
 let activeJobStartedMs = null;
 let durationTickHandle = null;
@@ -134,6 +138,9 @@ async function handleLogin(event) {
 function handleLogout() {
   saveToken(null);
   workflows = [];
+  processes = [];
+  processGroups = [];
+  processRunning = false;
   activeJobId = null;
   stopPolling();
   showLoginView();
@@ -144,60 +151,165 @@ async function loadWorkflows() {
     const response = await apiFetch("/api/workflows");
     const data = await response.json();
     workflows = data.workflows || [];
-    renderWorkflows();
+    processes = data.processes || [];
+    renderProcesses();
   } catch (e) {
     showToast("Could not load workflows.");
   }
 }
 
-function renderWorkflows() {
-  const grid = $("workflow-grid");
+function renderProcesses() {
+  const grid = $("process-grid");
   grid.innerHTML = "";
 
-  workflows.forEach((wf) => {
-    const card = document.createElement("div");
-    card.className = "workflow-card" + (wf.available ? "" : " is-disabled");
-    card.dataset.workflowId = wf.id;
+  const groupedIds = new Set();
+  processes.forEach((proc) => proc.workflowIds.forEach((id) => groupedIds.add(id)));
 
-    const name = document.createElement("h3");
-    name.className = "workflow-name";
-    name.textContent = wf.name;
+  processGroups = processes.map((proc) => ({
+    id: proc.id,
+    name: proc.name,
+    members: proc.workflowIds.map((id) => workflows.find((w) => w.id === id)).filter(Boolean),
+  }));
 
-    const desc = document.createElement("p");
-    desc.className = "workflow-desc";
-    desc.textContent = wf.available ? wf.description : (wf.reason || wf.description);
+  const orphans = workflows.filter((wf) => !groupedIds.has(wf.id));
+  if (orphans.length > 0) {
+    processGroups.push({ id: "other", name: "Other", members: orphans });
+  }
+
+  processGroups.forEach((proc) => {
+    grid.appendChild(buildProcessCard(proc));
+  });
+}
+
+function buildProcessCard(proc) {
+  const card = document.createElement("div");
+  card.className = "process-card";
+  card.dataset.processId = proc.id;
+
+  const header = document.createElement("div");
+  header.className = "process-header";
+
+  const name = document.createElement("h3");
+  name.className = "process-name";
+  name.textContent = proc.name;
+
+  const statusPill = document.createElement("span");
+  statusPill.className = "status-pill process-status-pill";
+  statusPill.setAttribute("aria-live", "polite");
+  statusPill.hidden = true;
+
+  header.appendChild(name);
+  header.appendChild(statusPill);
+
+  const actions = document.createElement("div");
+  actions.className = "process-actions";
+
+  const runProcessBtn = document.createElement("button");
+  runProcessBtn.type = "button";
+  runProcessBtn.className = "btn btn-run-process";
+  runProcessBtn.textContent = "Run Full Process";
+  runProcessBtn.disabled = activeJobId !== null || processRunning || !proc.members.some((m) => m.available);
+  runProcessBtn.addEventListener("click", () => runProcess(proc));
+
+  const toggleBtn = document.createElement("button");
+  toggleBtn.type = "button";
+  toggleBtn.className = "btn btn-ghost-light btn-toggle-step";
+  toggleBtn.textContent = "Run a single step";
+
+  actions.appendChild(runProcessBtn);
+  actions.appendChild(toggleBtn);
+
+  const stepControls = document.createElement("div");
+  stepControls.className = "process-step-controls";
+  stepControls.hidden = true;
+
+  const select = document.createElement("select");
+  select.className = "process-step-select";
+  proc.members.forEach((wf) => {
+    const option = document.createElement("option");
+    option.value = wf.id;
+    option.textContent = wf.name;
+    option.disabled = !wf.available;
+    select.appendChild(option);
+  });
+
+  const runStepBtn = document.createElement("button");
+  runStepBtn.type = "button";
+  runStepBtn.className = "btn btn-run-step";
+  runStepBtn.textContent = "Run step";
+  runStepBtn.disabled = activeJobId !== null || processRunning;
+  runStepBtn.addEventListener("click", () => {
+    const wf = proc.members.find((m) => m.id === select.value);
+    if (wf) runWorkflow(wf);
+  });
+
+  toggleBtn.addEventListener("click", () => {
+    stepControls.hidden = !stepControls.hidden;
+  });
+
+  stepControls.appendChild(select);
+  stepControls.appendChild(runStepBtn);
+
+  const stepList = document.createElement("ul");
+  stepList.className = "process-step-list";
+  proc.members.forEach((wf) => {
+    const li = document.createElement("li");
+    li.className = "step-row" + (wf.available ? "" : " is-disabled");
+    li.dataset.workflowId = wf.id;
+
+    const stepName = document.createElement("span");
+    stepName.className = "step-name";
+    stepName.textContent = wf.name;
 
     const pill = document.createElement("span");
     pill.className = "status-pill";
     pill.setAttribute("aria-live", "polite");
     pill.hidden = true;
 
-    const runBtn = document.createElement("button");
-    runBtn.type = "button";
-    runBtn.className = "btn btn-run";
-    runBtn.textContent = "Run";
-    runBtn.disabled = !wf.available || activeJobId !== null;
-    runBtn.addEventListener("click", () => runWorkflow(wf));
-
-    card.appendChild(name);
-    card.appendChild(desc);
-    card.appendChild(pill);
-    card.appendChild(runBtn);
-    grid.appendChild(card);
+    li.appendChild(stepName);
+    li.appendChild(pill);
+    stepList.appendChild(li);
   });
+
+  card.appendChild(header);
+  card.appendChild(actions);
+  card.appendChild(stepControls);
+  card.appendChild(stepList);
+
+  return card;
 }
 
 function setRunButtonsDisabled(disabled) {
-  document.querySelectorAll(".workflow-card .btn-run").forEach((btn) => {
-    const card = btn.closest(".workflow-card");
-    const wf = workflows.find((w) => w.id === card.dataset.workflowId);
-    btn.disabled = disabled || !wf || !wf.available;
+  const effective = disabled || processRunning;
+
+  document.querySelectorAll(".process-card").forEach((card) => {
+    const proc = processGroups.find((p) => p.id === card.dataset.processId);
+    const hasAvailable = !!proc && proc.members.some((m) => m.available);
+
+    const runProcessBtn = card.querySelector(".btn-run-process");
+    if (runProcessBtn) runProcessBtn.disabled = effective || !hasAvailable;
+
+    const runStepBtn = card.querySelector(".btn-run-step");
+    if (runStepBtn) runStepBtn.disabled = effective;
+
+    const select = card.querySelector(".process-step-select");
+    if (select) select.disabled = effective;
   });
 }
 
+function setProcessStatus(processId, statusClass, text) {
+  const card = document.querySelector(`.process-card[data-process-id="${processId}"]`);
+  const pill = card ? card.querySelector(".process-status-pill") : null;
+  if (!pill) return;
+
+  pill.hidden = false;
+  pill.className = "status-pill process-status-pill " + statusClass;
+  pill.textContent = text;
+}
+
 function cardPill(workflowId) {
-  const card = document.querySelector(`.workflow-card[data-workflow-id="${workflowId}"]`);
-  return card ? card.querySelector(".status-pill") : null;
+  const row = document.querySelector(`[data-workflow-id="${workflowId}"]`);
+  return row ? row.querySelector(".status-pill") : null;
 }
 
 const STATUS_LABELS = { QUEUED: "Queued", RUNNING: "Running", DONE: "Done", NOOP: "No-op", FAILED: "Failed" };
@@ -221,24 +333,146 @@ function setCardStatus(workflowId, status, summary) {
 }
 
 let pendingPlanWorkflow = null;
+let pendingPlanParams = null;
+let pendingPlanResolve = null;
+let pendingInputWorkflow = null;
+let pendingInputResolve = null;
+let pendingInputControls = null;
+
+function workflowNeedsInputs(wf) {
+  return Array.isArray(wf.inputs) && wf.inputs.length > 0;
+}
+
+function collectWorkflowInputs(wf) {
+  return new Promise((resolve) => {
+    pendingInputResolve = resolve;
+    renderWorkflowInputPanel(wf);
+  });
+}
+
+function renderWorkflowInputPanel(wf) {
+  pendingInputWorkflow = wf;
+  pendingInputControls = {};
+
+  $("inputWorkflowName").textContent = wf.name;
+
+  const fieldsEl = $("inputFields");
+  fieldsEl.innerHTML = "";
+
+  wf.inputs.forEach((field) => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "form-field";
+
+    const label = document.createElement("label");
+    label.setAttribute("for", "wfInput_" + field.key);
+    label.textContent = field.label;
+
+    const input = document.createElement("input");
+    input.id = "wfInput_" + field.key;
+    input.type = field.type === "checkbox" ? "checkbox" : field.type || "text";
+    input.addEventListener("input", updateWorkflowInputConfirmState);
+
+    wrapper.appendChild(label);
+    wrapper.appendChild(input);
+    fieldsEl.appendChild(wrapper);
+    pendingInputControls[field.key] = input;
+  });
+
+  updateWorkflowInputConfirmState();
+  $("workflowInputPanel").hidden = false;
+}
+
+function updateWorkflowInputConfirmState() {
+  const wf = pendingInputWorkflow;
+  const confirmBtn = $("btnInputConfirm");
+  const hintEl = $("inputHint");
+
+  if (!wf) {
+    return;
+  }
+
+  if (wf.id === "investor-brief-pdf") {
+    const anyFilled = wf.inputs.some((f) => (pendingInputControls[f.key].value || "").trim() !== "");
+    confirmBtn.disabled = !anyFilled;
+    hintEl.hidden = anyFilled;
+    hintEl.textContent = anyFilled ? "" : "Enter at least one contact detail.";
+  } else {
+    confirmBtn.disabled = false;
+    hintEl.hidden = true;
+    hintEl.textContent = "";
+  }
+}
+
+function closeWorkflowInputPanel() {
+  $("workflowInputPanel").hidden = true;
+  pendingInputWorkflow = null;
+  pendingInputControls = null;
+}
+
+function cancelWorkflowInput() {
+  const resolve = pendingInputResolve;
+  pendingInputResolve = null;
+  closeWorkflowInputPanel();
+  if (resolve) {
+    resolve(null);
+  }
+}
+
+function confirmWorkflowInput() {
+  const wf = pendingInputWorkflow;
+  const controls = pendingInputControls;
+  const resolve = pendingInputResolve;
+  pendingInputResolve = null;
+
+  if (!wf || !controls) {
+    return;
+  }
+
+  const params = {};
+  wf.inputs.forEach((field) => {
+    const control = controls[field.key];
+    if (field.type === "checkbox") {
+      params[field.key] = control.checked;
+      return;
+    }
+
+    const value = (control.value || "").trim();
+    if (value === "") {
+      return;
+    }
+
+    params[field.key] = field.type === "number" ? Number(value) : value;
+  });
+
+  closeWorkflowInputPanel();
+  if (resolve) {
+    resolve(params);
+  }
+}
 
 async function runWorkflow(wf) {
   if (activeJobId !== null) {
     return;
   }
 
+  let params = {};
+  if (workflowNeedsInputs(wf)) {
+    params = await collectWorkflowInputs(wf);
+    if (params === null) {
+      return;
+    }
+  }
+
   if (wf.hasPlan) {
-    await showWorkflowPlan(wf);
+    await showWorkflowPlan(wf, params);
     return;
   }
 
-  await executeWorkflowRun(wf);
+  await executeWorkflowRun(wf, params);
 }
 
-async function showWorkflowPlan(wf) {
-  const card = document.querySelector(`.workflow-card[data-workflow-id="${wf.id}"]`);
-  const runBtn = card ? card.querySelector(".btn-run") : null;
-  if (runBtn) runBtn.disabled = true;
+async function showWorkflowPlan(wf, params) {
+  setRunButtonsDisabled(true);
 
   try {
     const response = await apiFetch(`/api/workflows/${encodeURIComponent(wf.id)}/plan`, {
@@ -255,11 +489,12 @@ async function showWorkflowPlan(wf) {
     }
 
     pendingPlanWorkflow = wf;
+    pendingPlanParams = params || {};
     renderWorkflowPlanPanel(wf, data);
   } catch (e) {
     showToast("Could not preview this workflow.");
   } finally {
-    if (runBtn) runBtn.disabled = !wf.available || activeJobId !== null;
+    setRunButtonsDisabled(false);
   }
 }
 
@@ -300,48 +535,129 @@ function renderWorkflowPlanPanel(wf, plan) {
 function closeWorkflowPlanPanel() {
   $("workflowPlanPanel").hidden = true;
   pendingPlanWorkflow = null;
+  pendingPlanParams = null;
+}
+
+function cancelWorkflowPlan() {
+  const resolve = pendingPlanResolve;
+  pendingPlanResolve = null;
+  closeWorkflowPlanPanel();
+  if (resolve) {
+    resolve(null);
+  }
 }
 
 async function confirmWorkflowPlan() {
   const wf = pendingPlanWorkflow;
+  const params = pendingPlanParams;
+  const resolve = pendingPlanResolve;
+  pendingPlanResolve = null;
   closeWorkflowPlanPanel();
   if (wf) {
-    await executeWorkflowRun(wf);
+    const job = await executeWorkflowRun(wf, params);
+    if (resolve) {
+      resolve(job);
+    }
   }
 }
 
-async function executeWorkflowRun(wf) {
-  if (activeJobId !== null) {
+function executeWorkflowRun(wf, params) {
+  return new Promise((resolve) => {
+    (async () => {
+      if (activeJobId !== null) {
+        resolve(null);
+        return;
+      }
+
+      try {
+        const response = await apiFetch(`/api/workflows/${encodeURIComponent(wf.id)}/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(params || {}),
+        });
+
+        const data = await response.json();
+
+        if (response.status === 409) {
+          showToast("another job is running");
+          resolve(null);
+          return;
+        }
+
+        if (!response.ok) {
+          showToast(data.error || "Could not start workflow.");
+          resolve(null);
+          return;
+        }
+
+        activeJobId = data.jobId;
+        activeJobStartedMs = Date.now();
+        activeStepResolve = resolve;
+        setRunButtonsDisabled(true);
+        setCardStatus(wf.id, "QUEUED");
+        openOutputPanel(wf);
+        startPolling(wf);
+      } catch (e) {
+        showToast("Could not start workflow.");
+        resolve(null);
+      }
+    })();
+  });
+}
+
+async function runProcessStep(wf) {
+  let params = {};
+  if (workflowNeedsInputs(wf)) {
+    params = await collectWorkflowInputs(wf);
+    if (params === null) {
+      return null;
+    }
+  }
+
+  if (wf.hasPlan) {
+    return new Promise((resolve) => {
+      pendingPlanResolve = resolve;
+      showWorkflowPlan(wf, params);
+    });
+  }
+  return executeWorkflowRun(wf, params);
+}
+
+async function runProcess(process) {
+  if (activeJobId !== null || processRunning) {
     return;
   }
 
+  const members = process.members;
+  processRunning = true;
+  setRunButtonsDisabled(true);
+  setProcessStatus(process.id, "running", `Running (0/${members.length})`);
+
   try {
-    const response = await apiFetch(`/api/workflows/${encodeURIComponent(wf.id)}/run`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
+    for (let i = 0; i < members.length; i++) {
+      const wf = members[i];
+      if (!wf.available) {
+        continue;
+      }
 
-    const data = await response.json();
+      setProcessStatus(process.id, "running", `Step ${i + 1} of ${members.length}: ${wf.name}`);
+      const job = await runProcessStep(wf);
 
-    if (response.status === 409) {
-      showToast("another job is running");
-      return;
+      if (!job) {
+        setProcessStatus(process.id, "failed", "Cancelled");
+        return;
+      }
+
+      if (job.status === "FAILED") {
+        setProcessStatus(process.id, "failed", `Stopped at ${wf.name}`);
+        return;
+      }
     }
 
-    if (!response.ok) {
-      showToast(data.error || "Could not start workflow.");
-      return;
-    }
-
-    activeJobId = data.jobId;
-    activeJobStartedMs = Date.now();
-    setRunButtonsDisabled(true);
-    setCardStatus(wf.id, "QUEUED");
-    openOutputPanel(wf);
-    startPolling(wf);
-  } catch (e) {
-    showToast("Could not start workflow.");
+    setProcessStatus(process.id, "done", "Done");
+  } finally {
+    processRunning = false;
+    setRunButtonsDisabled(false);
   }
 }
 
@@ -448,6 +764,12 @@ function finishJob(wf, job) {
   });
   history.length = Math.min(history.length, MAX_HISTORY);
   renderHistory();
+
+  if (activeStepResolve) {
+    const resolve = activeStepResolve;
+    activeStepResolve = null;
+    resolve(job);
+  }
 }
 
 function renderHistory() {
@@ -1269,8 +1591,10 @@ function init() {
   });
   $("btnObConfirm").addEventListener("click", handleObConfirm);
 
-  $("btnPlanCancel").addEventListener("click", closeWorkflowPlanPanel);
+  $("btnPlanCancel").addEventListener("click", cancelWorkflowPlan);
   $("btnPlanConfirm").addEventListener("click", confirmWorkflowPlan);
+  $("btnInputCancel").addEventListener("click", cancelWorkflowInput);
+  $("btnInputConfirm").addEventListener("click", confirmWorkflowInput);
 
   $("resetConfirmEmail").addEventListener("input", handleResetConfirmInput);
   $("btnReset").addEventListener("click", handleResetAccount);

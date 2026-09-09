@@ -154,8 +154,18 @@
       </section>
 
       <section class="panel">
-        <h2>Workflows</h2>
-        <div id="workflow-grid" class="workflow-grid"></div>
+        <h2>Processes</h2>
+        <div id="process-grid" class="process-grid"></div>
+      </section>
+
+      <section class="panel plan-panel" id="workflowInputPanel" hidden>
+        <h2>Run: <span id="inputWorkflowName"></span></h2>
+        <div id="inputFields" class="form-grid"></div>
+        <p id="inputHint" class="field-hint" hidden></p>
+        <div class="ob-actions">
+          <button type="button" class="btn btn-ghost-light" id="btnInputCancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="btnInputConfirm">Run</button>
+        </div>
       </section>
 
       <section class="panel plan-panel" id="workflowPlanPanel" hidden>

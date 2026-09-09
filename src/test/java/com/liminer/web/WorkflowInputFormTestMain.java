@@ -4,6 +4,7 @@ import com.liminer.core.CRMSchemaConfig;
 import com.liminer.core.SessionContext;
 import com.liminer.core.UserAccount;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.InputStream;
@@ -13,20 +14,48 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Loopback test for the static frontend (index.html/app.js/styles.css) served by
- * WebServer: starts a server on an ephemeral test port with a fake LoginPort and a
- * fake WorkflowRegistry, then drives it over real HTTP to itself to check both the
- * static hosting and that the full API round-trip (login -> list -> run -> poll to
- * DONE) still works with the static file handler in place. Prints WEB_FRONTEND_OK on
- * success; exits 1 on any failure.
+ * Loopback test for the declarative workflow input-form mechanism (task 0202): the
+ * registry declares which parameters a workflow needs, the frontend collects and posts
+ * them, and the run request body actually carries them to the handler. Prints
+ * WORKFLOW_INPUT_FORM_OK on success; exits 1 on any failure.
  */
-public class WebFrontendTestMain
+public class WorkflowInputFormTestMain
 {
-    private static final int TEST_PORT = 7999;
+    private static final int TEST_PORT = 7995;
     private static final String BASE_URL = "http://127.0.0.1:" + TEST_PORT;
 
     public static void main(String[] args) throws Exception
     {
+        // (a) + (b): registry-level input declarations serialize correctly.
+        WorkflowRegistry.WorkflowInfo investorBriefPdf =
+            WorkflowRegistry.buildProductionRegistry().get("investor-brief-pdf");
+        check("investor-brief-pdf exists", investorBriefPdf != null);
+
+        JSONObject briefJson = investorBriefPdf.toJson();
+        check("investor-brief-pdf toJson has inputs", briefJson.has("inputs"));
+
+        JSONArray briefInputs = briefJson.getJSONArray("inputs");
+        check("investor-brief-pdf has exactly 4 inputs", briefInputs.length() == 4);
+
+        java.util.Set<String> keys = new java.util.HashSet<>();
+        for (int i = 0; i < briefInputs.length(); i++)
+        {
+            keys.add(briefInputs.getJSONObject(i).getString("key"));
+        }
+        check("input keys match", keys.equals(new java.util.HashSet<>(
+            java.util.Arrays.asList("firstName", "lastName", "fundName", "email"))));
+
+        WorkflowRegistry.WorkflowInfo noInputsWorkflow = new WorkflowRegistry.WorkflowInfo(
+            "no-inputs",
+            "No Inputs",
+            "Has no declared inputs.",
+            true,
+            null,
+            (context, params) -> "ok");
+        check("workflow with no inputs omits inputs key", !noInputsWorkflow.toJson().has("inputs"));
+
+        // (c): the frontend no longer hardcodes an empty run body, and has an input-form
+        // entry point wired up.
         WebServer.LoginPort fakeLogin = email ->
         {
             if ("test@example.com".equals(email))
@@ -55,29 +84,33 @@ public class WebFrontendTestMain
             null,
             (context, params) -> "done-A"));
 
+        fakeRegistry.add(new WorkflowRegistry.WorkflowInfo(
+            "echo-inputs",
+            "Echo Inputs",
+            "Echoes back the params it was given.",
+            true,
+            null,
+            (context, params) -> "params=" + params.toString())
+            .withInputs(
+                new WorkflowRegistry.InputField("firstName", "First name", "text", false),
+                new WorkflowRegistry.InputField("email", "Email", "email", false)));
+
         WebServer server = new WebServer(fakeLogin, fakeRegistry);
         server.start(TEST_PORT);
 
         try
         {
-            String indexBody = get("/");
-            check("GET / -> contains process-grid", indexBody.contains("process-grid"));
-            check("GET / -> references app.js", indexBody.contains("app.js"));
-            check("GET / -> references styles.css", indexBody.contains("styles.css"));
-
             String appJs = get("/app.js");
-            check("GET /app.js non-empty", appJs.length() > 0);
-            check("app.js references /api/login", appJs.contains("/api/login"));
-            check("app.js references /api/workflows", appJs.contains("/api/workflows"));
-            check("app.js references /api/jobs/", appJs.contains("/api/jobs/"));
-
-            String stylesCss = get("/styles.css");
-            check("GET /styles.css non-empty", stylesCss.length() > 0);
+            check("app.js run POST no longer hardcodes an empty body",
+                appJs.contains("body: JSON.stringify(params || {})"));
+            check("app.js has input-form entry point", appJs.contains("collectWorkflowInputs")
+                && appJs.contains("workflowInputPanel"));
 
             String loginBody = post("/api/login", "{\"email\":\"test@example.com\"}");
             String token = new JSONObject(loginBody).optString("token", null);
             check("login token non-empty", token != null && token.length() > 0);
 
+            // (e) existing login -> list -> run -> poll-to-DONE round trip still works.
             String workflowsBody = getWithAuth("/api/workflows", token);
             check("GET /api/workflows lists fake workflow", workflowsBody.contains("\"instant\""));
 
@@ -89,7 +122,21 @@ public class WebFrontendTestMain
             check("instant job DONE", "DONE".equals(job.optString("status")));
             check("instant job output has done-A", job.optString("output").contains("done-A"));
 
-            System.out.println("WEB_FRONTEND_OK");
+            // (d) collected inputs actually reach the handler over real HTTP.
+            String echoRunBody = postWithAuth(
+                "/api/workflows/echo-inputs/run",
+                "{\"firstName\":\"Ada\",\"email\":\"ada@example.com\"}",
+                token);
+            String echoJobId = new JSONObject(echoRunBody).optString("jobId", null);
+            check("run echo-inputs workflow returns jobId", echoJobId != null && echoJobId.length() > 0);
+
+            JSONObject echoJob = pollUntilTerminal(echoJobId, token);
+            check("echo-inputs job DONE", "DONE".equals(echoJob.optString("status")));
+            String echoOutput = echoJob.optString("output");
+            check("echo-inputs output carries firstName", echoOutput.contains("Ada"));
+            check("echo-inputs output carries email", echoOutput.contains("ada@example.com"));
+
+            System.out.println("WORKFLOW_INPUT_FORM_OK");
         }
         catch (Throwable t)
         {

@@ -15,6 +15,7 @@ import com.liminer.scout.CandidateScoringProcessor;
 import com.liminer.scout.Tier1SignalProcessor;
 import com.liminer.sheets.CrmUpdater;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
@@ -52,6 +53,67 @@ public class WorkflowRegistry
         JSONObject plan(SessionContext context, JSONObject params) throws Exception;
     }
 
+    /**
+     * A named group of workflows shown together on the dashboard (task 0200). The
+     * member id order here is derived from the workflows' own assignments, not a
+     * second hardcoded list, so it cannot drift from what buildProductionRegistry()
+     * actually assigns.
+     */
+    public static class ProcessInfo
+    {
+        public final String id;
+        public final String name;
+        public final List<String> workflowIds;
+
+        public ProcessInfo(String id, String name, List<String> workflowIds)
+        {
+            this.id = id;
+            this.name = name;
+            this.workflowIds = workflowIds;
+        }
+
+        public JSONObject toJson()
+        {
+            JSONObject json = new JSONObject();
+            json.put("id", id);
+            json.put("name", name);
+            json.put("workflowIds", workflowIds);
+            return json;
+        }
+    }
+
+    /**
+     * Declares one parameter a workflow's run form should collect (task 0202). A field
+     * being "required" only means the UI should mark it as such visually; workflows whose
+     * real rule is "at least one of several fields" (e.g. investor-brief-pdf) enforce that
+     * rule themselves in the frontend instead of marking every field required.
+     */
+    public static class InputField
+    {
+        public final String key;
+        public final String label;
+        public final String type;
+        public final boolean required;
+
+        public InputField(String key, String label, String type, boolean required)
+        {
+            this.key = key;
+            this.label = label;
+            this.type = type;
+            this.required = required;
+        }
+
+        public JSONObject toJson()
+        {
+            JSONObject json = new JSONObject();
+            json.put("key", key);
+            json.put("label", label);
+            json.put("type", type);
+            json.put("required", required);
+            return json;
+        }
+    }
+
     public static class WorkflowInfo
     {
         public final String id;
@@ -61,6 +123,9 @@ public class WorkflowRegistry
         public final String unavailableReason;
         public final WorkflowHandler handler;
         public final WorkflowPlanner planner;
+        public String processId;
+        public int orderInProcess;
+        public List<InputField> inputs = new ArrayList<>();
 
         public WorkflowInfo(
             String id,
@@ -91,6 +156,19 @@ public class WorkflowRegistry
             this.planner = planner;
         }
 
+        public WorkflowInfo inProcess(String processId, int orderInProcess)
+        {
+            this.processId = processId;
+            this.orderInProcess = orderInProcess;
+            return this;
+        }
+
+        public WorkflowInfo withInputs(InputField... fields)
+        {
+            this.inputs = java.util.Arrays.asList(fields);
+            return this;
+        }
+
         public JSONObject toJson()
         {
             JSONObject json = new JSONObject();
@@ -102,6 +180,19 @@ public class WorkflowRegistry
             if (!available && unavailableReason != null)
             {
                 json.put("reason", unavailableReason);
+            }
+            if (processId != null)
+            {
+                json.put("processId", processId);
+            }
+            if (inputs != null && !inputs.isEmpty())
+            {
+                JSONArray inputsJson = new JSONArray();
+                for (InputField field : inputs)
+                {
+                    inputsJson.put(field.toJson());
+                }
+                json.put("inputs", inputsJson);
             }
             return json;
         }
@@ -129,6 +220,55 @@ public class WorkflowRegistry
     public void add(WorkflowInfo info)
     {
         workflows.add(info);
+    }
+
+    private static final List<String> PROCESS_ORDER = java.util.Arrays.asList(
+        "refresh-crm", "deep-research", "discover", "analyze", "prioritize", "report");
+
+    private static final java.util.Map<String, String> PROCESS_NAMES = new java.util.HashMap<>();
+    static
+    {
+        PROCESS_NAMES.put("refresh-crm", "Refresh CRM");
+        PROCESS_NAMES.put("deep-research", "Deep Research");
+        PROCESS_NAMES.put("discover", "Discover");
+        PROCESS_NAMES.put("analyze", "Analyze");
+        PROCESS_NAMES.put("prioritize", "Prioritize");
+        PROCESS_NAMES.put("report", "Report");
+    }
+
+    /**
+     * Derives the six process groups (task 0200) from the workflows' own
+     * processId/orderInProcess assignments, so the grouping cannot drift from what
+     * buildProductionRegistry() actually assigned.
+     */
+    public List<ProcessInfo> processes()
+    {
+        List<ProcessInfo> result = new ArrayList<>();
+
+        for (String processId : PROCESS_ORDER)
+        {
+            List<WorkflowInfo> members = new ArrayList<>();
+
+            for (WorkflowInfo info : workflows)
+            {
+                if (processId.equals(info.processId))
+                {
+                    members.add(info);
+                }
+            }
+
+            members.sort((a, b) -> Integer.compare(a.orderInProcess, b.orderInProcess));
+
+            List<String> ids = new ArrayList<>();
+            for (WorkflowInfo info : members)
+            {
+                ids.add(info.id);
+            }
+
+            result.add(new ProcessInfo(processId, PROCESS_NAMES.get(processId), ids));
+        }
+
+        return result;
     }
 
     private static int paramInt(JSONObject params, String key, int defaultValue)
@@ -176,7 +316,8 @@ public class WorkflowRegistry
             "Process unprocessed email intake rows.",
             true,
             null,
-            (context, params) -> EmailIntakeProcessor.processUnprocessedIntakeRows(context)));
+            (context, params) -> EmailIntakeProcessor.processUnprocessedIntakeRows(context))
+            .inProcess("refresh-crm", 0));
 
         registry.add(new WorkflowInfo(
             "update-crm",
@@ -185,7 +326,8 @@ public class WorkflowRegistry
             true,
             null,
             (context, params) -> CrmUpdater.updateCrmFromProcessedIntakeRows(context),
-            (context, params) -> CrmUpdater.planCrmUpdate(context)));
+            (context, params) -> CrmUpdater.planCrmUpdate(context))
+            .inProcess("refresh-crm", 1));
 
         registry.add(new WorkflowInfo(
             "enrich-lps",
@@ -194,7 +336,8 @@ public class WorkflowRegistry
             true,
             null,
             (context, params) -> LPEnrichmentProcessor.enrichLpRows(context),
-            (context, params) -> LPEnrichmentProcessor.planEnrichment(context, paramInt(params, "maxRows", 25))));
+            (context, params) -> LPEnrichmentProcessor.planEnrichment(context, paramInt(params, "maxRows", 25)))
+            .inProcess("deep-research", 1));
 
         registry.add(new WorkflowInfo(
             "embed-lps",
@@ -202,7 +345,8 @@ public class WorkflowRegistry
             "Build canonical LP profiles and write their weighted block vectors.",
             true,
             null,
-            (context, params) -> ProfileEmbeddingProcessor.embedLpRows(context, paramInt(params, "maxRows", 25))));
+            (context, params) -> ProfileEmbeddingProcessor.embedLpRows(context, paramInt(params, "maxRows", 25)))
+            .inProcess("deep-research", 2));
 
         registry.add(new WorkflowInfo(
             "discover-candidates",
@@ -237,7 +381,8 @@ public class WorkflowRegistry
                     scrapeLinkedIn,
                     scrapeWebsites,
                     extractProfiles);
-            }));
+            })
+            .inProcess("discover", 0));
 
         registry.add(new WorkflowInfo(
             "score-candidates",
@@ -245,7 +390,8 @@ public class WorkflowRegistry
             "Score the next batch of unscored candidates.",
             true,
             null,
-            (context, params) -> CandidateScoringProcessor.scoreNextUnscoredCandidates(context, 10)));
+            (context, params) -> CandidateScoringProcessor.scoreNextUnscoredCandidates(context, 10))
+            .inProcess("analyze", 2));
 
         registry.add(new WorkflowInfo(
             "prioritize-relationships",
@@ -254,7 +400,8 @@ public class WorkflowRegistry
             true,
             null,
             (context, params) ->
-                Tier1SignalProcessor.runTier1Signals(context, paramInt(params, "maxRows", 100))));
+                Tier1SignalProcessor.runTier1Signals(context, paramInt(params, "maxRows", 100)))
+            .inProcess("prioritize", 0));
 
         registry.add(new WorkflowInfo(
             "background-check",
@@ -263,7 +410,8 @@ public class WorkflowRegistry
             true,
             null,
             (context, params) ->
-                BasicBackgroundChecker.runBasicBackgroundCheckWorkflow(context, paramInt(params, "maxRows", 30))));
+                BasicBackgroundChecker.runBasicBackgroundCheckWorkflow(context, paramInt(params, "maxRows", 30)))
+            .inProcess("deep-research", 0));
 
         registry.add(new WorkflowInfo(
             "market-intelligence",
@@ -271,7 +419,8 @@ public class WorkflowRegistry
             "Run LP market intelligence scoring.",
             true,
             null,
-            (context, params) -> LPScoreProcessor.scoreLpRows(context)));
+            (context, params) -> LPScoreProcessor.scoreLpRows(context))
+            .inProcess("analyze", 0));
 
         registry.add(new WorkflowInfo(
             "relationship-summary",
@@ -279,7 +428,8 @@ public class WorkflowRegistry
             "Generate relationship summaries.",
             true,
             null,
-            (context, params) -> RelationshipSummaryProcessor.generateSummaries(context)));
+            (context, params) -> RelationshipSummaryProcessor.generateSummaries(context))
+            .inProcess("analyze", 1));
 
         registry.add(new WorkflowInfo(
             "investor-brief",
@@ -288,7 +438,8 @@ public class WorkflowRegistry
             true,
             null,
             (context, params) ->
-                InvestorBriefJsonProcessor.generateBriefs(context, paramInt(params, "maxRows", 10))));
+                InvestorBriefJsonProcessor.generateBriefs(context, paramInt(params, "maxRows", 10)))
+            .inProcess("analyze", 3));
 
         registry.add(new WorkflowInfo(
             "investor-brief-pdf",
@@ -306,7 +457,13 @@ public class WorkflowRegistry
                     new InvestorBriefClient.ContactQuery(firstName, lastName, fundName, email);
                 if (query.isEmpty()) return "ERROR: No contact details provided.";
                 return InvestorBriefClient.runAuto(context, query);
-            }));
+            })
+            .withInputs(
+                new InputField("firstName", "First name", "text", false),
+                new InputField("lastName", "Last name", "text", false),
+                new InputField("fundName", "Fund name", "text", false),
+                new InputField("email", "Email", "email", false))
+            .inProcess("report", 0));
 
         return registry;
     }
