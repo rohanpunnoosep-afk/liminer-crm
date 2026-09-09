@@ -14,8 +14,9 @@ import java.util.HashMap;
  *
  * What it does:
  * 1. Reads the user's CRM.
- * 2. Builds an average basis InvestorProfile from investors whose Conversation Status
- *    is First Interest, Meetings, or Prospective Close.
+ * 2. Builds the basis InvestorProfile from the GP's own declared client profile
+ *    (clientSectorTags, clientMicrosectorTags, clientGeography, clientInvestmentThesis
+ *    on the account), not from CRM evidence.
  * 3. Finds the first 10 CRM rows that:
  *      - have a usable Intelligence JSON / InvestorProfile
  *      - have not already been scored in InvestorProfileSimilarity
@@ -82,11 +83,11 @@ public class CandidateScoringProcessor
         );
 
         CandidateScorer scorer0 = new CandidateScorer();
-        InvestorProfile averageBasis0 = scorer0.buildAverageBasisProfileFromCrm(context0);
+        InvestorProfile clientBasis0 = scorer0.buildBasisProfileFromClientProfile(context0);
 
-        if (!hasUsefulProfile(averageBasis0))
+        if (!hasUsefulProfile(clientBasis0))
         {
-            return "ERROR: Could not build basis profile. Need at least one CRM investor with status First Interest or better and a usable Intelligence JSON.";
+            return "ERROR: Could not build basis profile. Set the client sector, microsector, geography and investment thesis fields on your account before scoring candidates.";
         }
 
         ArrayList<Integer> rowNumbers0 = new ArrayList<Integer>();
@@ -141,7 +142,7 @@ public class CandidateScoringProcessor
             return "Candidate scoring complete. No unscored CRM rows with InvestorProfiles found.";
         }
 
-        scorer0.scoreCandidates(averageBasis0, candidates0);
+        scorer0.scoreCandidates(clientBasis0, candidates0);
 
         int minRow0 = min(rowNumbers0);
         int maxRow0 = max(rowNumbers0);

@@ -24,11 +24,12 @@ import org.json.JSONObject;
  *
  *    Use this when the caller already knows the profile to compare against.
  *
- * 2. CRM-derived basis mode:
+ * 2. Declared client profile basis mode:
  *      scoreCandidates(SessionContext context, ArrayList<CandidateInvestor> candidates)
  *
- *    Use this when the caller wants the system to build an average basis profile
- *    from CRM investors that have reached First Interest or better.
+ *    Use this when the caller wants the system to build the basis profile from the
+ *    GP's own declared client profile on their account (clientSectorTags,
+ *    clientMicrosectorTags, clientGeography, clientInvestmentThesis).
  *
  * The scorer mutates CandidateInvestor objects by filling:
  * - finalScore
@@ -70,16 +71,16 @@ public class CandidateScorer
     /*
      * Overloaded version.
      *
-     * This builds the basis InvestorProfile from the average profile of CRM rows
-     * with Conversation Status of First Interest or better, then scores candidates
-     * against that generated basis.
+     * This builds the basis InvestorProfile from the GP's own declared client profile
+     * (context.user.clientSectorTags/clientMicrosectorTags/clientGeography/
+     * clientInvestmentThesis), then scores candidates against that basis.
      */
     public void scoreCandidates(
         SessionContext context0,
         ArrayList<CandidateInvestor> candidates0) throws Exception
     {
-        InvestorProfile averageBasis0 = buildAverageBasisProfileFromCrm(context0);
-        scoreCandidates(averageBasis0, candidates0);
+        InvestorProfile basis0 = buildBasisProfileFromClientProfile(context0);
+        scoreCandidates(basis0, candidates0);
     }
 
     public CandidateInvestor scoreCandidate(
@@ -152,7 +153,7 @@ public class CandidateScorer
         );
     }
 
-    private String buildOpenAIScoringPrompt(
+    String buildOpenAIScoringPrompt(
         InvestorProfile basis0,
         CandidateInvestor candidate0)
     {
@@ -419,6 +420,32 @@ public class CandidateScorer
                 }
             }
         );
+    }
+
+    /*
+     * Builds the scoring basis from the GP's own declared client profile
+     * (context.user.clientSectorTags/clientMicrosectorTags/clientGeography/
+     * clientInvestmentThesis) rather than from CRM evidence, so scoring reflects what
+     * the GP actually said they invest in.
+     */
+    public InvestorProfile buildBasisProfileFromClientProfile(SessionContext context0)
+    {
+        if (context0 == null || context0.user == null)
+        {
+            return new InvestorProfile();
+        }
+
+        ArrayList<InvestorProfile> seedProfiles0 = CandidateDiscoveryProcessor.buildSeedProfilesFromClientInput(
+            context0.user.clientSectorTags,
+            context0.user.clientMicrosectorTags,
+            context0.user.clientGeography,
+            context0.user.clientInvestmentThesis
+        );
+
+        InvestorProfile basis0 = seedProfiles0.get(0);
+        basis0.fundName = "Declared Client Profile";
+
+        return basis0;
     }
 
     /*
