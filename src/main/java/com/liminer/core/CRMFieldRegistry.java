@@ -195,6 +195,8 @@ public class CRMFieldRegistry
         // 0170-0176), which turns a CanonicalProfile into a fixed-layout
         // weighted block vector so LP-to-GP fit becomes a dot product.
         // "Profile Vector" holds the base64 float16 encoding of the vector.
+        // See docs/profile-vector-encoding.md for the encoding format and
+        // how to decode it with VectorCodec.decodeBase64(String).
         // "Profile Vector Meta" carries the block layout and encoder version
         // ALONGSIDE the vector, not just in code, so a stored vector stays
         // decodable after the layout changes and a version mismatch triggers
@@ -204,7 +206,7 @@ public class CRMFieldRegistry
         reg("mainTabConnectionPointCol", "Connection Point", "Connection Point", "text", "main", true, false, true, "", "");
         reg("mainTabConnectionPointJsonCol", "Connection Point JSON", "Connection Point JSON", "json", "main", true, false, true, "", "");
         reg("mainTabCanonicalProfileJsonCol", "Canonical Profile JSON", "Canonical Profile JSON", "json", "main", true, false, true, "", "");
-        reg("mainTabProfileVectorCol", "Profile Vector", "Profile Vector", "text", "main", true, false, true, "", "");
+        reg("mainTabProfileVectorCol", "Profile Vector", "Profile Vector (base64 fp16)", "text", "main", true, false, true, "", "");
         reg("mainTabProfileVectorMetaCol", "Profile Vector Meta", "Profile Vector Meta", "json", "main", true, false, true, "", "");
 
         // ============================================================
