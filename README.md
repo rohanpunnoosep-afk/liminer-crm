@@ -195,6 +195,7 @@ run the test suite.
 | `LIMINER_MAX_RUN_USD` | Hard cost ceiling per run; the run aborts above it |
 | `LIMINER_CONTACT_EMAIL` | Contact address sent in the `User-Agent` to public registers |
 | `BRIGHT_DATA_API_TOKEN` | SERP and LinkedIn retrieval |
+| `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD` | SERP retrieval (DataForSEO, tried before Bright Data) |
 | `HUNTER_API_KEY` | Email discovery |
 | `EMAIL_VERIFIER_URL`, `EMAIL_VERIFIER_API_KEY` | Email verification |
 | `COMPANIES_HOUSE_API_KEY` | UK Companies House |

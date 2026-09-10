@@ -40,6 +40,7 @@ public class SearchRouter implements SearchProvider
     private static List<SearchProvider> defaultProviders0()
     {
         List<SearchProvider> providers0 = new ArrayList<SearchProvider>();
+        providers0.add(new DataForSeoSerpProvider());
         providers0.add(new BrightDataSearchProvider());
         return providers0;
     }

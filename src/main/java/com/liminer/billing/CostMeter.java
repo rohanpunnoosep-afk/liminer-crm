@@ -32,11 +32,23 @@ public class CostMeter
     private static final double TEXT_EMBEDDING_3_SMALL_PROMPT_USD_PER_1M = 0.02;
 
     // ------------------------------------------------------------------------
-    // HARDCODED BRIGHT DATA PRICING. Billed per request (CPM = cost per mille,
-    // i.e. per 1,000 requests) at the same rate for both the SERP API and the
-    // Web Unlocker, so one constant covers every BrightDataHttp call site.
+    // HARDCODED SEARCH PROVIDER PRICING (USD per 1,000 requests), keyed by
+    // SearchProvider.name(). "brightdata" covers both the SERP API and the Web
+    // Unlocker at the same CPM. "dataforseo" is the "live advanced" tier (~6s,
+    // chosen over the cheaper queued tier because enrichment runs synchronously
+    // per row). UNKNOWN_PROVIDER_USD_PER_1K_REQUESTS prices any unmapped
+    // provider name deliberately high, so a provider added without a rate entry
+    // is over-counted against the run ceiling rather than treated as free.
     // ------------------------------------------------------------------------
-    private static final double BRIGHT_DATA_USD_PER_1K_REQUESTS = 1.50;
+    private static final double UNKNOWN_PROVIDER_USD_PER_1K_REQUESTS = 5.00;
+
+    private static final Map<String, Double> SEARCH_PROVIDER_USD_PER_1K_REQUESTS = new ConcurrentHashMap<>();
+
+    static
+    {
+        SEARCH_PROVIDER_USD_PER_1K_REQUESTS.put("brightdata", 1.50);
+        SEARCH_PROVIDER_USD_PER_1K_REQUESTS.put("dataforseo", 2.00);
+    }
 
     private static final Map<String, double[]> PRICES_PER_1M_TOKENS = new ConcurrentHashMap<>();
 
@@ -81,6 +93,8 @@ public class CostMeter
     private final AtomicLong unknownModelCalls = new AtomicLong();
     private final AtomicLong brightDataCalls = new AtomicLong();
     private final AtomicLong brightDataMicroDollars = new AtomicLong();
+    private final Map<String, AtomicLong> searchProviderCalls = new ConcurrentHashMap<>();
+    private final Map<String, AtomicLong> searchProviderMicroDollars = new ConcurrentHashMap<>();
 
     public CostMeter(double ceilingUsd)
     {
@@ -128,11 +142,38 @@ public class CostMeter
      */
     public void recordBrightData(String zoneLabel)
     {
-        brightDataCalls.incrementAndGet();
+        recordSearch("brightdata");
+    }
 
-        long micros = Math.round(BRIGHT_DATA_USD_PER_1K_REQUESTS / 1_000.0 * 1_000_000.0);
-        brightDataMicroDollars.addAndGet(micros);
+    /**
+     * Records one search-provider HTTP request (whether it succeeded or failed --
+     * a failed request still bills) against this meter, priced by provider name
+     * from SEARCH_PROVIDER_USD_PER_1K_REQUESTS. An unmapped provider name is priced
+     * at UNKNOWN_PROVIDER_USD_PER_1K_REQUESTS rather than treated as free, so the
+     * run ceiling never silently under-counts a newly added provider.
+     *
+     * "brightdata" additionally updates the legacy brightDataCalls/brightDataUsd
+     * counters so recordBrightData(...) and existing toJson() readers keep working
+     * unchanged.
+     */
+    public void recordSearch(String providerName)
+    {
+        String provider = providerName == null ? "" : providerName;
+
+        searchProviderCalls.computeIfAbsent(provider, ignored -> new AtomicLong()).incrementAndGet();
+
+        Double ratePer1k = SEARCH_PROVIDER_USD_PER_1K_REQUESTS.get(provider);
+        double effectiveRate = ratePer1k == null ? UNKNOWN_PROVIDER_USD_PER_1K_REQUESTS : ratePer1k;
+
+        long micros = Math.round(effectiveRate / 1_000.0 * 1_000_000.0);
+        searchProviderMicroDollars.computeIfAbsent(provider, ignored -> new AtomicLong()).addAndGet(micros);
         microDollars.addAndGet(micros);
+
+        if ("brightdata".equals(provider))
+        {
+            brightDataCalls.incrementAndGet();
+            brightDataMicroDollars.addAndGet(micros);
+        }
     }
 
     public double usd()
@@ -166,6 +207,19 @@ public class CostMeter
         json.put("unknownModelCalls", unknownModelCalls.get());
         json.put("brightDataCalls", brightDataCalls.get());
         json.put("brightDataUsd", brightDataMicroDollars.get() / 1_000_000.0);
+
+        JSONObject searchProviders = new JSONObject();
+        for (Map.Entry<String, AtomicLong> entry : searchProviderCalls.entrySet())
+        {
+            String provider = entry.getKey();
+            JSONObject providerJson = new JSONObject();
+            providerJson.put("calls", entry.getValue().get());
+            long providerMicros = searchProviderMicroDollars.getOrDefault(provider, new AtomicLong()).get();
+            providerJson.put("usd", providerMicros / 1_000_000.0);
+            searchProviders.put(provider, providerJson);
+        }
+        json.put("searchProviders", searchProviders);
+
         return json;
     }
 
