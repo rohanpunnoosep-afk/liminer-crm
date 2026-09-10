@@ -42,6 +42,7 @@ public class SearchRouter implements SearchProvider
         List<SearchProvider> providers0 = new ArrayList<SearchProvider>();
         providers0.add(new DataForSeoSerpProvider());
         providers0.add(new BrightDataSearchProvider());
+        providers0.add(new DuckDuckGoUnlockerProvider());
         return providers0;
     }
 

@@ -60,6 +60,27 @@ final class BrightDataHttp
         String url0, String jsonBody0, String bearerToken0, String zoneLabel0, long timeoutSeconds0)
         throws IOException
     {
+        return post(url0, jsonBody0, bearerToken0, zoneLabel0, timeoutSeconds0, "brightdata", true);
+    }
+
+    /*
+     * For callers whose traffic must not be gated by, or feed, the global SERP zone
+     * latch -- namely DuckDuckGoUnlockerProvider, which exists specifically to keep
+     * working while that latch is tripped -- and whose spend should be billed under
+     * their own CostMeter provider name instead of the generic "brightdata" bucket.
+     */
+    static Result postIndependentOfZoneHealth(
+        String url0, String jsonBody0, String bearerToken0, String zoneLabel0, String billingProvider0)
+        throws IOException
+    {
+        return post(url0, jsonBody0, bearerToken0, zoneLabel0, 20L, billingProvider0, false);
+    }
+
+    private static Result post(
+        String url0, String jsonBody0, String bearerToken0, String zoneLabel0, long timeoutSeconds0,
+        String billingProvider0, boolean honorZoneHealthGate0)
+        throws IOException
+    {
         // Once a zone is known dead every later call fails identically, so fail fast
         // instead of burning hundreds of billable round trips on a lost cause.
         //
@@ -67,11 +88,14 @@ final class BrightDataHttp
         // carries the stack trace of where it was CONSTRUCTED, so rethrowing the
         // original would point every later failure at the first call site that saw
         // the fault instead of the one that actually gave up.
-        BrightDataZoneException knownFault0 = BrightDataZoneHealth.fault();
-        if (knownFault0 != null)
+        if (honorZoneHealthGate0)
         {
-            throw new BrightDataZoneException(
-                knownFault0.getZone(), knownFault0.getErrorCode());
+            BrightDataZoneException knownFault0 = BrightDataZoneHealth.fault();
+            if (knownFault0 != null)
+            {
+                throw new BrightDataZoneException(
+                    knownFault0.getZone(), knownFault0.getErrorCode());
+            }
         }
 
         Request request0 = new Request.Builder()
@@ -105,14 +129,17 @@ final class BrightDataHttp
             CostMeter meter0 = CostMeter.current();
             if (meter0 != null)
             {
-                meter0.recordBrightData(zoneLabel0);
+                meter0.recordSearch(billingProvider0);
             }
 
             if (errCode0 != null && !errCode0.trim().isEmpty())
             {
                 BrightDataZoneException fault0 =
                     new BrightDataZoneException(zoneLabel0, errCode0.trim());
-                BrightDataZoneHealth.recordFault(fault0);
+                if (honorZoneHealthGate0)
+                {
+                    BrightDataZoneHealth.recordFault(fault0);
+                }
                 throw fault0;
             }
 

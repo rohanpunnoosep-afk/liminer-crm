@@ -48,6 +48,7 @@ public class CostMeter
     {
         SEARCH_PROVIDER_USD_PER_1K_REQUESTS.put("brightdata", 1.50);
         SEARCH_PROVIDER_USD_PER_1K_REQUESTS.put("dataforseo", 2.00);
+        SEARCH_PROVIDER_USD_PER_1K_REQUESTS.put("duckduckgo", 1.50);
     }
 
     private static final Map<String, double[]> PRICES_PER_1M_TOKENS = new ConcurrentHashMap<>();
