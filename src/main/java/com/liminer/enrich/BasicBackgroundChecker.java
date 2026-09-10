@@ -597,8 +597,30 @@ public class BasicBackgroundChecker
                 try
                 {
                     BackgroundCheckResult result0 = check(rowInput0, batchCache0);
+
+                    // check() swallows individual SERP failures by design, so a dead
+                    // zone comes back as a well-formed but entirely empty result. Only
+                    // the latch can tell that apart from "genuinely found nothing".
+                    if (!BrightDataZoneHealth.isHealthy())
+                    {
+                        throw BrightDataZoneHealth.fault();
+                    }
+
                     rowResultsConcurrent0.put(rowInput0.crmRowNumber, result0);
-                    completedCount0.incrementAndGet();
+
+                    // Count the row by what actually came back, not merely by "check()
+                    // returned without throwing". A row that resolved nothing carries
+                    // status FAILED, and lumping it into Completed is what made a run
+                    // that found zero evidence on every row still report Failed: 0.
+                    if (STATUS_FAILED.equals(result0.status)
+                        || STATUS_INSUFFICIENT_INPUT.equals(result0.status))
+                    {
+                        failedCount0.incrementAndGet();
+                    }
+                    else
+                    {
+                        completedCount0.incrementAndGet();
+                    }
                 }
                 catch (Exception exception0)
                 {
@@ -664,13 +686,37 @@ public class BasicBackgroundChecker
         // Reconcile duplicate rows (same person on multiple rows) so siblings agree.
         deduplicateResults(rowResults0);
 
+        // A dead zone means nothing was actually researched. Writing now would stamp
+        // every row as checked with empty findings, and because eligibility keys off
+        // that stamp the rows would be skipped forever on re-run -- silently losing
+        // them. Leave the CRM untouched so a retry after fixing the zone picks them up.
+        String zoneFault0 = BrightDataZoneHealth.faultSummary();
+        if (zoneFault0 != null)
+        {
+            System.out.println("Skipping CRM write: " + zoneFault0);
+            return "Background check FAILED. " + zoneFault0
+                + " CRM left unchanged so these rows remain eligible for a retry.";
+        }
+
         if (!rowResults0.isEmpty())
         {
             writeResultsToCrm(spreadsheetId0, mainTabName0, updateCols0, rowResults0);
         }
 
-        return "Background check complete. Completed: " + completedCount0.get()
-            + ", Failed: " + failedCount0.get() + ".";
+        int completed0 = completedCount0.get();
+        int failed0 = failedCount0.get();
+
+        // Say plainly when nothing was resolved. "Completed: 0, Failed: 4" alone reads
+        // like a normal run to anyone skimming the dashboard for a green badge.
+        if (completed0 == 0 && failed0 > 0)
+        {
+            return "Background check resolved nothing: 0 of " + failed0
+                + " row(s) produced any evidence. The rows were searched but no matching"
+                + " LinkedIn profile or bio page was found.";
+        }
+
+        return "Background check complete. Completed: " + completed0
+            + ", Failed: " + failed0 + ".";
     }
 
     // ============================================================

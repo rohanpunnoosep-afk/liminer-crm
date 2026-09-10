@@ -1,5 +1,7 @@
 package com.liminer.enrich;
 
+import com.liminer.billing.CostMeter;
+
 import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 import okhttp3.Call;
@@ -58,6 +60,20 @@ final class BrightDataHttp
         String url0, String jsonBody0, String bearerToken0, String zoneLabel0, long timeoutSeconds0)
         throws IOException
     {
+        // Once a zone is known dead every later call fails identically, so fail fast
+        // instead of burning hundreds of billable round trips on a lost cause.
+        //
+        // Throw a fresh exception rather than the latched instance: an exception
+        // carries the stack trace of where it was CONSTRUCTED, so rethrowing the
+        // original would point every later failure at the first call site that saw
+        // the fault instead of the one that actually gave up.
+        BrightDataZoneException knownFault0 = BrightDataZoneHealth.fault();
+        if (knownFault0 != null)
+        {
+            throw new BrightDataZoneException(
+                knownFault0.getZone(), knownFault0.getErrorCode());
+        }
+
         Request request0 = new Request.Builder()
             .url(url0)
             .addHeader("Content-Type", "application/json")
@@ -83,9 +99,21 @@ final class BrightDataHttp
             String body0 = response0.body() == null ? "" : response0.body().string();
             String errCode0 = response0.header(HEADER_ERR_CODE0);
 
+            // Bill the round trip before any error branch below can return or throw.
+            // A run driven from the terminal binds no meter, so current() is null and
+            // this is a no-op there.
+            CostMeter meter0 = CostMeter.current();
+            if (meter0 != null)
+            {
+                meter0.recordBrightData(zoneLabel0);
+            }
+
             if (errCode0 != null && !errCode0.trim().isEmpty())
             {
-                throw new RuntimeException("Bright Data zone error [" + zoneLabel0 + "]: " + errCode0);
+                BrightDataZoneException fault0 =
+                    new BrightDataZoneException(zoneLabel0, errCode0.trim());
+                BrightDataZoneHealth.recordFault(fault0);
+                throw fault0;
             }
 
             return new Result(status0, body0);

@@ -30,9 +30,19 @@ public class BrightDataTransportTestMain
 
         try
         {
+            // Each case resets the zone latch first: testZoneErrorHeaderRaisesException
+            // deliberately latches a fault, and BrightDataHttp.post fails fast while one
+            // is set, so without this every later case would fail on that stale fault.
+            BrightDataZoneHealth.reset();
             testProxyConnectionHeaderIsLenientlyParsed();
+
+            BrightDataZoneHealth.reset();
             testZoneErrorHeaderRaisesException();
+
+            BrightDataZoneHealth.reset();
             testNoZoneErrorHeaderReturnsBodyUnchanged();
+
+            BrightDataZoneHealth.reset();
             testSerpClientParsesThroughNewTransport();
         }
         catch (Exception exception0)
@@ -44,6 +54,7 @@ public class BrightDataTransportTestMain
         finally
         {
             BrightDataHttp.callFactory = realFactory0;
+            BrightDataZoneHealth.reset();
         }
 
         if (failures0 > 0)

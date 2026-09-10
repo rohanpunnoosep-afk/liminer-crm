@@ -121,6 +121,12 @@ public class BrightDataSerpClient
     {
         ArrayList<SerpResult> results0 = new ArrayList<SerpResult>();
 
+        // Organic entries seen vs kept. "Saw results but kept none" is a parser or
+        // zone-config failure, not a search miss, and only this method can tell the
+        // two apart -- by the time an empty list reaches the caller they look alike.
+        int seen0 = 0;
+        String firstDropped0 = null;
+
         try
         {
             JSONObject root0 = new JSONObject(responseBody0);
@@ -159,9 +165,29 @@ public class BrightDataSerpClient
                     continue;
                 }
 
+                seen0++;
+
+                // The HTML path has always filtered via isUsefulUrl; this JSON path did
+                // not, which is how relative /goto? redirects reached the scrapers and
+                // came back as HTTP 400s. Validate here so callers can trust the url.
+                //
+                // isAbsoluteHttpUrl alone is not enough: Bright Data's full parser
+                // returns the same /goto redirect stub as an ABSOLUTE google.com URL,
+                // which passes that check and then costs a Web Unlocker request to
+                // discover it is unfetchable. isUsefulUrl rejects google.com outright.
+                String cleaned0 = cleanGoogleRedirectUrl(url0);
+                if (!isAbsoluteHttpUrl(cleaned0) || !isUsefulUrl(cleaned0))
+                {
+                    if (firstDropped0 == null)
+                    {
+                        firstDropped0 = cleaned0;
+                    }
+                    continue;
+                }
+
                 results0.add(new SerpResult(
                     item0.optString("title", ""),
-                    cleanGoogleRedirectUrl(url0),
+                    cleaned0,
                     firstNonBlank(item0.optString("description", ""), item0.optString("snippet", ""), ""),
                     item0.optInt("global_rank", results0.size() + 1),
                     query0
@@ -170,6 +196,18 @@ public class BrightDataSerpClient
         }
         catch (Exception ignored0)
         {
+        }
+
+        // A query that genuinely matched nothing has seen0 == 0 and is not a fault.
+        if (seen0 > 0 && results0.isEmpty())
+        {
+            System.out.println("SERP: discarded all " + seen0
+                + " result(s) as unusable (e.g. " + firstDropped0 + ")");
+            BrightDataZoneHealth.noteResultsUnusable(BRIGHT_DATA_SERP_ZONE0, firstDropped0);
+        }
+        else if (!results0.isEmpty())
+        {
+            BrightDataZoneHealth.noteResultsUsable();
         }
 
         return results0;
@@ -241,29 +279,100 @@ public class BrightDataSerpClient
 
         String value0 = url0.trim();
 
-        if (value0.startsWith("/url?"))
+        // Google wraps results in several redirect shapes. /url?q= and /url?url= carry
+        // the destination percent-encoded and are recoverable. /goto?url= carries an
+        // opaque encrypted blob (protobuf, no plaintext URL inside) and is NOT -- it is
+        // left as-is here and rejected by isAbsoluteHttpUrl below, because handing that
+        // relative path to Bright Data just earns an HTTP 400 "url must be a valid uri".
+        if (value0.startsWith("/url?") || value0.startsWith("/goto?")
+            || value0.startsWith("https://www.google.com/url?"))
         {
-            int qIndex0 = value0.indexOf("q=");
-            if (qIndex0 != -1)
+            String extracted0 = extractRedirectTarget0(value0);
+            if (!isBlank(extracted0))
             {
-                String rest0 = value0.substring(qIndex0 + 2);
-                int ampIndex0 = rest0.indexOf("&");
-                if (ampIndex0 != -1)
-                {
-                    rest0 = rest0.substring(0, ampIndex0);
-                }
-                try
-                {
-                    return java.net.URLDecoder.decode(rest0, StandardCharsets.UTF_8);
-                }
-                catch (Exception ignored0)
-                {
-                    return rest0;
-                }
+                return extracted0;
             }
         }
 
         return value0;
+    }
+
+    /*
+     * Pull the destination out of a Google redirect query string, trying the "q" and
+     * "url" parameters in turn. Returns "" when neither yields an absolute http(s) URL
+     * (the encrypted /goto case), so the caller can fall through and let validation
+     * reject it rather than emitting a relative path as if it were a real result.
+     */
+    private static String extractRedirectTarget0(String value0)
+    {
+        int queryStart0 = value0.indexOf('?');
+        if (queryStart0 == -1)
+        {
+            return "";
+        }
+
+        String query0 = value0.substring(queryStart0 + 1);
+
+        for (String param0 : query0.split("&"))
+        {
+            int eq0 = param0.indexOf('=');
+            if (eq0 <= 0)
+            {
+                continue;
+            }
+
+            String name0 = param0.substring(0, eq0);
+            if (!name0.equals("q") && !name0.equals("url"))
+            {
+                continue;
+            }
+
+            String raw0 = param0.substring(eq0 + 1);
+            String decoded0;
+            try
+            {
+                decoded0 = java.net.URLDecoder.decode(raw0, StandardCharsets.UTF_8);
+            }
+            catch (Exception ignored0)
+            {
+                decoded0 = raw0;
+            }
+
+            if (isAbsoluteHttpUrl(decoded0))
+            {
+                return decoded0;
+            }
+        }
+
+        return "";
+    }
+
+    /*
+     * True only for absolute http(s) URLs. Bright Data rejects anything else, so this
+     * is the gate that keeps relative Google artefacts (/goto?..., /search?..., #frag)
+     * out of the result set instead of discovering they are bad one wasted call later.
+     */
+    public static boolean isAbsoluteHttpUrl(String url0)
+    {
+        if (isBlank(url0))
+        {
+            return false;
+        }
+
+        String low0 = url0.trim().toLowerCase();
+        if (!low0.startsWith("http://") && !low0.startsWith("https://"))
+        {
+            return false;
+        }
+
+        try
+        {
+            return !isBlank(java.net.URI.create(url0.trim()).getHost());
+        }
+        catch (Exception ignored0)
+        {
+            return false;
+        }
     }
 
     private static String firstNonBlank(String a0, String b0, String c0)

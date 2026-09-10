@@ -4,6 +4,7 @@ import com.liminer.billing.CostMeter;
 import com.liminer.core.CRMFieldRegistry;
 import com.liminer.core.LpContext;
 import com.liminer.core.SessionContext;
+import com.liminer.enrich.BrightDataZoneHealth;
 import com.liminer.enrich.ScrapeCache;
 import com.liminer.indicators.Indicator;
 import com.liminer.indicators.IndicatorRegistry;
@@ -264,6 +265,17 @@ public class LPScoreProcessor
 
         try { snapshotStore.flush(spreadsheetId); }
         catch (Exception e) { System.err.println("[SnapshotStore] flush failed: " + e.getMessage()); }
+
+        // A dead Bright Data zone yields scores built on no evidence at all. Writing
+        // them would stamp the rows as scored and make them ineligible for a retry, so
+        // leave the CRM alone and report the real cause instead.
+        String zoneFault = BrightDataZoneHealth.faultSummary();
+        if (zoneFault != null)
+        {
+            System.out.println("Skipping CRM write: " + zoneFault);
+            return "LP market intelligence FAILED. " + zoneFault
+                + " CRM left unchanged so these rows remain eligible for a retry.";
+        }
 
         // Step 10: write results column-by-column (no rectangles).
         writeResultsToSheet(spreadsheetId, tabName, outputCols, rowResults, dataStartRow);

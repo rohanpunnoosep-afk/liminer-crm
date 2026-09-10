@@ -31,6 +31,13 @@ public class CostMeter
     private static final double GPT_4_1_COMPLETION_USD_PER_1M      = 8.00;
     private static final double TEXT_EMBEDDING_3_SMALL_PROMPT_USD_PER_1M = 0.02;
 
+    // ------------------------------------------------------------------------
+    // HARDCODED BRIGHT DATA PRICING. Billed per request (CPM = cost per mille,
+    // i.e. per 1,000 requests) at the same rate for both the SERP API and the
+    // Web Unlocker, so one constant covers every BrightDataHttp call site.
+    // ------------------------------------------------------------------------
+    private static final double BRIGHT_DATA_USD_PER_1K_REQUESTS = 1.50;
+
     private static final Map<String, double[]> PRICES_PER_1M_TOKENS = new ConcurrentHashMap<>();
 
     static
@@ -72,6 +79,8 @@ public class CostMeter
     private final AtomicLong completionTokens = new AtomicLong();
     private final AtomicLong microDollars = new AtomicLong();
     private final AtomicLong unknownModelCalls = new AtomicLong();
+    private final AtomicLong brightDataCalls = new AtomicLong();
+    private final AtomicLong brightDataMicroDollars = new AtomicLong();
 
     public CostMeter(double ceilingUsd)
     {
@@ -106,6 +115,26 @@ public class CostMeter
         microDollars.addAndGet(Math.round(usd * 1_000_000.0));
     }
 
+    /**
+     * Records one Bright Data request (SERP API or Web Unlocker -- same CPM) against
+     * this meter. Counted separately from LLM calls because they are different units
+     * of work, but the spend lands in the same pot so the run ceiling sees the true
+     * total rather than the LLM share alone.
+     *
+     * Called once per completed HTTP round trip, which means a caller's retry costs
+     * what a retry actually costs. Requests that come back carrying a zone error are
+     * still counted: they reached Bright Data, and this code cannot verify whether
+     * they were credited, so the conservative assumption is that they were billed.
+     */
+    public void recordBrightData(String zoneLabel)
+    {
+        brightDataCalls.incrementAndGet();
+
+        long micros = Math.round(BRIGHT_DATA_USD_PER_1K_REQUESTS / 1_000.0 * 1_000_000.0);
+        brightDataMicroDollars.addAndGet(micros);
+        microDollars.addAndGet(micros);
+    }
+
     public double usd()
     {
         return microDollars.get() / 1_000_000.0;
@@ -135,6 +164,8 @@ public class CostMeter
         json.put("usd", usd());
         json.put("ceilingUsd", ceilingUsd);
         json.put("unknownModelCalls", unknownModelCalls.get());
+        json.put("brightDataCalls", brightDataCalls.get());
+        json.put("brightDataUsd", brightDataMicroDollars.get() / 1_000_000.0);
         return json;
     }
 

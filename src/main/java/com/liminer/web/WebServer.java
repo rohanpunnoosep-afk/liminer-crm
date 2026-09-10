@@ -6,6 +6,7 @@ import com.liminer.brief.InvestorBriefJson;
 import com.liminer.brief.InvestorBriefPdfRenderer;
 import com.liminer.core.CRMRegistry;
 import com.liminer.core.SessionContext;
+import com.liminer.enrich.BrightDataZoneHealth;
 import com.liminer.sheets.SheetsApp;
 
 import io.javalin.Javalin;
@@ -884,6 +885,11 @@ public class WebServer
         PrintStream originalOut = System.out;
         ByteArrayOutputStream capture = new ByteArrayOutputStream();
 
+        // Per-run latch: enrichment swallows individual SERP failures on purpose, so a
+        // dead Bright Data zone would otherwise surface as a clean "Done" with nothing
+        // enriched. Clear it here, consult it below.
+        BrightDataZoneHealth.reset();
+
         try
         {
             System.setOut(new PrintStream(capture, true));
@@ -893,11 +899,22 @@ public class WebServer
             System.setOut(originalOut);
 
             String captured = capture.toString();
-            String combined = captured.isEmpty() ? result : captured + "\n" + result;
+            String zoneFault = BrightDataZoneHealth.faultSummary();
 
-            job.output = truncateOutput(combined);
-            job.status = classifyResult(result);
-            job.summary = summarize(result);
+            if (zoneFault != null)
+            {
+                String combined = captured.isEmpty() ? zoneFault : captured + "\n" + zoneFault;
+                job.output = truncateOutput(combined);
+                job.status = "FAILED";
+                job.summary = zoneFault;
+            }
+            else
+            {
+                String combined = captured.isEmpty() ? result : captured + "\n" + result;
+                job.output = truncateOutput(combined);
+                job.status = classifyResult(result);
+                job.summary = summarize(result);
+            }
         }
         catch (CostCeilingExceededException e)
         {
@@ -946,8 +963,15 @@ public class WebServer
             return "FAILED";
         }
 
+        if (lower.startsWith("background check failed")
+            || lower.contains("failed.") && lower.contains("bright data zone"))
+        {
+            return "FAILED";
+        }
+
         if (lower.contains("no eligible rows") || lower.contains("nothing to")
-            || lower.contains("no rows") || lower.contains("0 rows"))
+            || lower.contains("no rows") || lower.contains("0 rows")
+            || lower.contains("resolved nothing"))
         {
             return "NOOP";
         }
