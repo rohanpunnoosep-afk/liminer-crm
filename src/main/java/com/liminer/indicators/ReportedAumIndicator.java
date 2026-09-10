@@ -99,9 +99,14 @@ public class ReportedAumIndicator implements Indicator
             reportedNote0 = "as reported " + asOf0;
         }
 
+        // A figure we cannot read as a number carries no magnitude, so it cannot be
+        // scored — drop it rather than let an unparseable string become a 0.
+        double score0 = ResourceScale.scoreForMoneyText(aum0);
+        if (score0 < 0.0) return IndicatorResult.empty(AXIS_RESOURCES);
+
         double confidence0 = Math.min(llmConfidence0, MAX_CONFIDENCE);
         return new IndicatorResult("Reported AUM " + aum0 + " (" + reportedNote0 + ")",
-            confidence0, sourceUrl0, asOf0, AXIS_RESOURCES,
+            confidence0, score0, sourceUrl0, asOf0, AXIS_RESOURCES,
             "SERP+LLM reconciled public AUM figure for " + lpName0
             + (isBlank(domain0) ? "" : " anchored on domain " + domain0)
             + "; universal fallback, outranked by filings.");

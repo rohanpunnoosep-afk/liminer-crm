@@ -32,6 +32,8 @@ public class ADVStrategyIndicator implements Indicator
     private static final double THESIS_FIT_GATE_THRESHOLD = 0.45;
     private static final double FILING_CONFIDENCE = 0.80;
     private static final int MAX_SUMMARY_CHARS = 49_000;
+    // Qualitative leaf: contributes evidence, not a measured alignment magnitude.
+    private static final double NEUTRAL_FIT_SCORE = 0.50;
 
     private final EdgarClient edgarClient0 = new EdgarClient();
 
@@ -83,8 +85,12 @@ public class ADVStrategyIndicator implements Indicator
         String truncSummary = summary.length() > MAX_SUMMARY_CHARS
             ? summary.substring(0, MAX_SUMMARY_CHARS) : summary;
 
-        return new IndicatorResult(truncSummary, FILING_CONFIDENCE, sourceUrl, asOf,
-            AXIS_FIT,
+        // This leaf produces a qualitative strategy summary, not a measured degree of
+        // fit, so it reports a neutral magnitude: it should neither inflate nor
+        // deflate the FIT axis, only add a well-sourced voice to it. If it is ever
+        // upgraded to score alignment against the GP thesis, set the real value here.
+        return new IndicatorResult(truncSummary, FILING_CONFIDENCE, NEUTRAL_FIT_SCORE,
+            sourceUrl, asOf, AXIS_FIT,
             "ADV Part 2 Item 8 strategy summary (section-extracted, " + item8Text.length()
             + " chars extracted from brochure). CRD/CIK=" + crdOrCik + ".");
     }

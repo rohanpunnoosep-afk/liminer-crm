@@ -53,6 +53,11 @@ public class HeadcountProxyIndicator implements Indicator
         String band0 = headcountBand(json0);
         if (isBlank(band0)) return IndicatorResult.empty(AXIS_RESOURCES);
 
+        // Magnitude from the TOP of the reported band (a "51-200" firm is scored as
+        // 200), because this leaf is a floor estimate that only ever runs when the
+        // real figures missed — and ResourceScale caps headcount well below a filing.
+        double score0 = ResourceScale.scoreForHeadcount(bandTop(band0));
+
         String industries0 = firstNonBlank(
             joinArray(json0, "industries"),
             json0.optString("industry", ""),
@@ -67,7 +72,7 @@ public class HeadcountProxyIndicator implements Indicator
 
         // Snapshot signal — the page has no "as of" date, so today is the honest stamp.
         String asOf0 = LocalDate.now().toString();
-        return new IndicatorResult(value0.toString(), PROXY_CONFIDENCE,
+        return new IndicatorResult(value0.toString(), PROXY_CONFIDENCE, score0,
             isBlank(result0.url) ? ctx.companyLinkedInUrl.trim() : result0.url,
             asOf0, AXIS_RESOURCES,
             "LinkedIn company headcount proxy via ScrapeCache; floor estimate only.");
@@ -102,6 +107,20 @@ public class HeadcountProxyIndicator implements Indicator
             if (n0 > 0) return bandFor(n0) + " (~" + n0 + ")";
         }
         return "";
+    }
+
+    // Largest headcount implied by a band string like "51-200" or "1001-5000 (~1200)".
+    private static long bandTop(String band0)
+    {
+        java.util.regex.Matcher m0 =
+            java.util.regex.Pattern.compile("(\\d+)").matcher(band0);
+        long top0 = 0L;
+        while (m0.find())
+        {
+            try { top0 = Math.max(top0, Long.parseLong(m0.group(1))); }
+            catch (Exception e0) { /* ignore unparseable fragment */ }
+        }
+        return top0;
     }
 
     private String bandFor(long n0)

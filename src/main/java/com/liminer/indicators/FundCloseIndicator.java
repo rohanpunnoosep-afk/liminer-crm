@@ -103,8 +103,8 @@ public class FundCloseIndicator implements Indicator
                 ? "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=" + cik0 + "&type=D&dateb=&owner=include&count=10"
                 : formD.url;
 
-            return new IndicatorResult(value0.toString(), conf0, sourceUrl0, asOf0,
-                AXIS_PROBABILITY_NOW,
+            return new IndicatorResult(value0.toString(), conf0, recencyScore(asOf0),
+                sourceUrl0, asOf0, AXIS_PROBABILITY_NOW,
                 "EDGAR Form D (private offering notice filed within 15 days of first sale), CIK=" + cik0 + ".");
         }
         catch (Exception e0)
@@ -176,7 +176,7 @@ public class FundCloseIndicator implements Indicator
             if (isBlank(asOf0)) asOf0 = LocalDate.now().toString();
 
             double conf0 = applyRecencyPenalty(NEWS_CONFIRMED_CONFIDENCE, asOf0);
-            return new IndicatorResult(description0, conf0, bestUrl0, asOf0,
+            return new IndicatorResult(description0, conf0, recencyScore(asOf0), bestUrl0, asOf0,
                 AXIS_PROBABILITY_NOW,
                 "News fund-close event extracted via SERP+LLM for LP: " + ctx.fundName + ".");
         }
@@ -215,6 +215,35 @@ public class FundCloseIndicator implements Indicator
             + "Do not include any text outside the JSON object. If unsure, set found=false.";
     }
 
+    /*
+     * Timing MAGNITUDE for a close event: how strong a "they have fresh capital and
+     * are deploying it" signal this is, purely as a function of how recently it
+     * happened. This is the score half of the leaf; applyRecencyPenalty below is the
+     * confidence half (staleness makes us less sure the state still holds). A fund
+     * that closed last month is a much stronger reason to call now than one that
+     * closed three years ago, even though we are equally certain both filings exist.
+     */
+    private static double recencyScore(String asOf0)
+    {
+        LocalDate eventDate0 = parseIsoDate(asOf0);
+        if (eventDate0 == null) return 0.40;   // undated event: weak but real signal
+
+        long months0 = ChronoUnit.MONTHS.between(eventDate0, LocalDate.now());
+        if (months0 < 0)  return 0.90;         // dated in the future — treat as fresh
+        if (months0 <= 6)  return 1.00;
+        if (months0 <= 12) return 0.85;
+        if (months0 <= 24) return 0.55;
+        if (months0 <= 36) return 0.30;
+        return 0.15;
+    }
+
+    private static LocalDate parseIsoDate(String s0)
+    {
+        if (s0 == null || s0.trim().isEmpty()) return null;
+        try { return LocalDate.parse(s0.trim().substring(0, Math.min(10, s0.trim().length()))); }
+        catch (Exception e0) { return null; }
+    }
+
     /** Apply a confidence reduction when the event is older than RECENCY_MONTHS_GATE. */
     private double applyRecencyPenalty(double baseConf0, String asOfDate0)
     {
@@ -232,13 +261,16 @@ public class FundCloseIndicator implements Indicator
         return baseConf0;
     }
 
-    /** Pick the IndicatorResult with higher confidence; null-safe. */
+    /** Pick the IndicatorResult with the stronger evidence; null-safe. */
     private IndicatorResult chooseBest(IndicatorResult a0, IndicatorResult b0)
     {
         if (a0 == null && b0 == null) return null;
         if (a0 == null) return b0;
         if (b0 == null) return a0;
-        return a0.confidence >= b0.confidence ? a0 : b0;
+        // Rank by evidence weight — confidence scaled by timing strength — so a
+        // slightly-less-certain report of a close LAST MONTH beats a rock-solid
+        // report of one from four years ago.
+        return (a0.confidence * a0.score) >= (b0.confidence * b0.score) ? a0 : b0;
     }
 
     /** Extract the LP's domain for entity anchoring. */

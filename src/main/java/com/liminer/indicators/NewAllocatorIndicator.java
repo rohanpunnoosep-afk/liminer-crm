@@ -33,6 +33,9 @@ public class NewAllocatorIndicator implements Indicator
     // A recently-started senior allocator is a strong timing signal.
     private static final double HIGH_CONFIDENCE = 0.80;
     private static final double MEDIUM_CONFIDENCE = 0.60;
+    // Timing strength, separate from how sure we are of the tenure reading.
+    private static final double NEW_ALLOCATOR_SCORE = 0.85;
+    private static final double ESTABLISHED_ALLOCATOR_SCORE = 0.35;
     // Start within this window → "new" (months).
     private static final int NEW_ALLOCATOR_MONTHS = 18;
 
@@ -87,7 +90,13 @@ public class NewAllocatorIndicator implements Indicator
             + person.firstName + " " + person.lastName
             + " (" + person.title + ") at " + ctx.fundName + ".";
 
-        return new IndicatorResult(value, confidence, sourceUrl, asOf,
+        // Timing MAGNITUDE: a newly-seated allocator is actively building a book and
+        // is the strongest "reachable right now" signal this leaf can produce. An
+        // established one is a real contact but not a timing event, so it scores low
+        // rather than zero — it should not drag the axis down, just not lift it.
+        double score = isNew ? NEW_ALLOCATOR_SCORE : ESTABLISHED_ALLOCATOR_SCORE;
+
+        return new IndicatorResult(value, confidence, score, sourceUrl, asOf,
             AXIS_PROBABILITY_NOW, evidence);
     }
 

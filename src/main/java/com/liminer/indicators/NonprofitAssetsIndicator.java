@@ -81,7 +81,13 @@ public class NonprofitAssetsIndicator implements Indicator
         String sourceUrl0 = !isBlank(form990.url) ? form990.url.trim()
             : "https://projects.propublica.org/nonprofits/organizations/" + ein0;
 
-        return new IndicatorResult(value0.toString(), FILING_CONFIDENCE, sourceUrl0,
+        // Score on the balance sheet itself: total assets when filed, otherwise the
+        // investment portfolio. An endowment's assets ARE its capacity to allocate.
+        double score0 = ResourceScale.scoreForMoneyText(
+            !isBlank(form990.totalAssets) ? form990.totalAssets : form990.investments);
+        if (score0 < 0.0) return IndicatorResult.empty(AXIS_RESOURCES);
+
+        return new IndicatorResult(value0.toString(), FILING_CONFIDENCE, score0, sourceUrl0,
             asOf0, AXIS_RESOURCES,
             "IRS 990/990-PF balance sheet via ProPublica, keyed by pre-resolved EIN " + ein0 + ".");
     }

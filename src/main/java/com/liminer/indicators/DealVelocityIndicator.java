@@ -89,9 +89,10 @@ public class DealVelocityIndicator implements Indicator
         value.append("fund-close events (trailing 12m): ").append(recentCloseCount);
 
         double confidence = deriveConfidence(raumDelta, recentCloseCount);
+        double score = deriveScore(raumDelta, recentCloseCount);
         String asOf = LocalDate.now().toString();
 
-        return new IndicatorResult(value.toString().trim(), confidence, "",
+        return new IndicatorResult(value.toString().trim(), confidence, score, "",
             asOf, AXIS_PROBABILITY_NOW,
             "DealVelocity from SnapshotStore series ("
             + raumSeries.size() + " RAUM snapshots, "
@@ -157,6 +158,26 @@ public class DealVelocityIndicator implements Indicator
             if (d != null && !d.isBefore(cutoff)) count++;
         }
         return count;
+    }
+
+    /*
+     * Momentum MAGNITUDE: how fast this LP is actually moving. Distinct from
+     * deriveConfidence, which measures how much history we have to say so — two
+     * snapshots and two closes make us CERTAIN about a velocity that may itself be
+     * flat, and a flat velocity is a weak reason to call now.
+     */
+    private double deriveScore(double raumDelta, int closeCount)
+    {
+        double s = 0.0;
+        if (raumDelta > 0.25)      s += 0.55;   // rapid asset growth
+        else if (raumDelta > 0.10) s += 0.40;
+        else if (raumDelta > 0.0)  s += 0.20;
+        else if (raumDelta < -0.10) s -= 0.15;  // shrinking: a real negative signal
+
+        if (closeCount >= 2)      s += 0.45;
+        else if (closeCount == 1) s += 0.30;
+
+        return Math.min(Math.max(s, 0.0), 1.0);
     }
 
     private double deriveConfidence(double raumDelta, int closeCount)

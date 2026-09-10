@@ -42,6 +42,9 @@ import org.json.JSONObject;
  */
 public class InvestorBriefJsonProcessor
 {
+    // The only honest funding status when no timing evidence exists.
+    private static final String FUNDING_STATUS_UNKNOWN = "Unknown";
+
     private static final int MAX_CRM_ROWS   = 500;
     private static final int MAX_COLUMNS    = 200;
     private static final int MAX_ROWS_BATCH = 10;   // briefs are GPT-heavy
@@ -210,7 +213,15 @@ public class InvestorBriefJsonProcessor
 
         // GPT pass 1 — strategy synthesis (derives fundingStatus, then call prep).
         JSONObject pass1 = runStrategySynthesis(brief, gpProfile);
-        String fundingStatus = pass1.optString("fundingStatus", "");
+        // Deterministic backstop for the prompt rule above: if the market-intelligence
+        // blob has no probability_now evidence, the funding status is Unknown no matter
+        // what the model returned. A prompt instruction alone is a request; this is a
+        // guarantee, and a fabricated "Between Funds" in a brief the GP takes into a
+        // meeting is exactly the kind of claim that must not depend on a request.
+        String fundingStatus = hasProbabilityNowEvidence(brief.marketIntelligence)
+            ? pass1.optString("fundingStatus", "")
+            : FUNDING_STATUS_UNKNOWN;
+        if (isBlank(fundingStatus)) fundingStatus = FUNDING_STATUS_UNKNOWN;
         // Hoist fundingStatus to the top level of marketIntelligence (explicit field).
         brief.marketIntelligence.put("fundingStatus", fundingStatus);
         brief.callPreparation = pass1.optJSONObject("callPreparation") != null
@@ -302,6 +313,36 @@ public class InvestorBriefJsonProcessor
     }
 
     // -----------------------------------------------------------------------
+    // Funding status evidence gate
+    // -----------------------------------------------------------------------
+
+    /**
+     * True only when at least one PROBABILITY_NOW indicator in the market-intelligence
+     * blob actually carries a finding — a non-blank value AND positive confidence.
+     * An axis full of IndicatorResult.empty() leaves is evidence of nothing and must
+     * not be synthesized into a funding-cycle claim.
+     */
+    private static boolean hasProbabilityNowEvidence(JSONObject marketIntelligence0)
+    {
+        if (marketIntelligence0 == null) return false;
+        JSONObject intel0 = marketIntelligence0.optJSONObject("intelligence");
+        if (intel0 == null) return false;
+        org.json.JSONArray leaves0 = intel0.optJSONArray("probability_now");
+        if (leaves0 == null) return false;
+
+        for (int i0 = 0; i0 < leaves0.length(); i0++)
+        {
+            JSONObject leaf0 = leaves0.optJSONObject(i0);
+            if (leaf0 == null) continue;
+            if (!isBlank(leaf0.optString("value", "")) && leaf0.optDouble("confidence", 0.0) > 0.0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // -----------------------------------------------------------------------
     // GPT passes
     // -----------------------------------------------------------------------
 
@@ -325,6 +366,14 @@ public class InvestorBriefJsonProcessor
         sb.append("Instructions:\n");
         sb.append("1. FIRST derive fundingStatus from the LP's Probability Now indicators in marketIntelligence. ");
         sb.append("It must be a short plain-language label such as \"Actively Deploying\", \"Between Funds\", or \"Fundraising\".\n");
+        // Without this escape hatch the model was REQUIRED to produce a label even
+        // with every probability_now indicator empty, so it invented one: an LP with
+        // no timing evidence at all was briefed to the GP as "Between Funds".
+        sb.append("   You MUST answer exactly \"Unknown\" when the probability_now indicators are ");
+        sb.append("absent, empty, or carry no evidence of the LP's current funding cycle. ");
+        sb.append("Do NOT infer a funding status from the LP's name, sector, size, website, or from ");
+        sb.append("the fit/resources scores — only from dated probability_now evidence. ");
+        sb.append("\"Unknown\" is a correct and expected answer; guessing is not.\n");
         sb.append("2. THEN condition the rest of the synthesis (talking points, questions, objections, opportunities, next steps) on that fundingStatus and on how the GP's fund profile fits this LP.\n\n");
 
         sb.append("GP fund profile (the fund being raised):\n");

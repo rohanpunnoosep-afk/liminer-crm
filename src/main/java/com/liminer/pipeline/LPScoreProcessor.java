@@ -37,10 +37,14 @@ import org.json.JSONObject;
  *   1. Resolves identity keys (CRD/CIK/LEI/EIN) once, then caches them.
  *   2. Runs all registered Indicator leaves (gated by confidence) in a
  *      fixed thread pool (BBC pattern).
- *   3. Rolls up per-leaf results into three axis scores:
- *        RESOURCES  — max confidence leaf (1A > 1B > 1C > 1D)
- *        FIT        — mean confidence, adjusted by GP profile alignment
- *        PROB_NOW   — mean confidence × MacroContextModifier multiplier
+ *   3. Rolls up per-leaf SCORES (magnitude) weighted by CONFIDENCE (trust) into
+ *      three axis scores — never the confidences themselves, which measure source
+ *      quality and say nothing about the LP:
+ *        RESOURCES  — best-evidenced leaf wins outright (1A > 1B > 1C > 1D)
+ *        FIT        — confidence-weighted mean of leaf scores
+ *        PROB_NOW   — confidence-weighted mean × MacroContextModifier multiplier
+ *      An axis where no leaf found anything is written BLANK, not 0, and the Intel
+ *      Status column reports the coverage (COMPLETE / PARTIAL / NO_EVIDENCE).
  *   4. Writes five score columns + the Intelligence JSON blob column-by-column.
  *   5. Flushes SnapshotStore queue single-threaded.
  *
@@ -60,6 +64,10 @@ public class LPScoreProcessor
     private static final String STATUS_RUNNING   = "RUNNING";
     private static final String STATUS_COMPLETE  = "COMPLETE";
     private static final String STATUS_FAILED    = "FAILED";
+    // Coverage-bearing statuses: the run finished, but not every axis found evidence.
+    // A score cell is left BLANK for an axis with no evidence, and these say so.
+    private static final String STATUS_PARTIAL     = "PARTIAL";
+    private static final String STATUS_NO_EVIDENCE = "NO_EVIDENCE";
 
     // Column-update field indices (for the per-column write arrays).
     private static final int IDX_CRD         = 0;
@@ -307,43 +315,85 @@ public class LPScoreProcessor
             || !isBlank(ctx.identityKeys.cik) || !isBlank(ctx.identityKeys.ein);
         boolean hasInfo = hasWebsite || hasIdentity;
 
+        // ORDER IS LOAD-BEARING. RESOURCES must run before PROBABILITY_NOW, because
+        // DealVelocityIndicator (a PROBABILITY_NOW leaf) queues this run's RAUM into
+        // SnapshotStore for next run's year-over-year delta, and it reads that figure
+        // off ctx. The carry-over below used to sit AFTER all three axes had run, so
+        // ctx was still empty when DealVelocity looked — the RAUM series never
+        // accumulated a single point and the leaf could never fire on any row, ever.
         List<IndicatorResult> resourcesResults = runAxis(ctx, cache, resources, hasInfo);
-        List<IndicatorResult> fitResults       = runAxis(ctx, cache, fit, hasInfo);
-        List<IndicatorResult> probNowResults   = runAxis(ctx, cache, probNow, hasInfo);
+        carryResourcesIntoContext(ctx, resourcesResults);
 
-        // Carry latest RAUM and FundClose into ctx for DealVelocity queuing.
-        for (IndicatorResult r : resourcesResults)
-        {
-            if (r.isPresent() && "Raum".equals(indicatorNameOf(r, resources)))
-            {
-                ctx.latestRaumValue = r.value;
-                ctx.latestRaumDate  = r.asOfDate;
-                ctx.latestRaumSourceUrl = r.sourceUrl;
-            }
-        }
-        for (IndicatorResult r : probNowResults)
-        {
-            if (r.isPresent() && isFundCloseResult(r))
-            {
-                ctx.latestFundCloseValue    = r.value;
-                ctx.latestFundCloseDate     = r.asOfDate;
-                ctx.latestFundCloseSourceUrl = r.sourceUrl;
-            }
-        }
+        List<IndicatorResult> fitResults     = runAxis(ctx, cache, fit, hasInfo);
+        List<IndicatorResult> probNowResults = runAxis(ctx, cache, probNow, hasInfo);
+        carryFundCloseIntoContext(ctx, probNowResults);
 
-        // Rollup.
-        result.resourcesScore   = rollupAxis(resourcesResults);
-        result.fitScore         = rollupAxis(fitResults);
-        result.probabilityNow   = rollupAxis(probNowResults) * macro.multiplier;
-        result.probabilityNow   = Math.min(1.0, Math.max(0.0, result.probabilityNow));
+        // Rollup. RESOURCES asks "how much capital is there", a single-fact question
+        // with a best answer, so the best-evidenced leaf wins outright and the weaker
+        // ones do not dilute it (a filed RAUM must not be averaged down by a headcount
+        // guess). FIT and PROBABILITY_NOW are genuinely multi-signal, so they blend
+        // every leaf, weighted by how much each is trusted.
+        AxisRollup resourcesRollup = rollupBestSource(resourcesResults);
+        AxisRollup fitRollup       = rollupWeightedMean(fitResults);
+        AxisRollup probRollup      = rollupWeightedMean(probNowResults);
+
+        result.hasResources = resourcesRollup.hasEvidence;
+        result.hasFit       = fitRollup.hasEvidence;
+        result.hasProbNow   = probRollup.hasEvidence;
+
+        result.resourcesScore = resourcesRollup.score;
+        result.fitScore       = fitRollup.score;
+        result.probabilityNow = clamp01(probRollup.score * macro.multiplier);
 
         // Build the Intelligence JSON blob (<50k).
         result.intelligenceJson = buildIntelligenceJson(
             resourcesResults, fitResults, probNowResults, macro);
 
         result.lastIntelDate = LocalDate.now().toString();
-        result.intelStatus = STATUS_COMPLETE;
+        result.intelStatus = statusFor(result);
         return result;
+    }
+
+    /*
+     * Intel status now reports COVERAGE, not just "the code finished". A row where
+     * every leaf came back empty used to be written as COMPLETE with three zeros,
+     * which reads as a confident verdict of "no money, no fit, no timing" when the
+     * truth was "we found nothing". The score cells are left blank in that case and
+     * this status says why.
+     */
+    private static String statusFor(RowResult r)
+    {
+        int axes = (r.hasResources ? 1 : 0) + (r.hasFit ? 1 : 0) + (r.hasProbNow ? 1 : 0);
+        if (axes == 3) return STATUS_COMPLETE;
+        if (axes == 0) return STATUS_NO_EVIDENCE;
+        return STATUS_PARTIAL;
+    }
+
+    // Hand this run's RAUM to DealVelocityIndicator via ctx, for its snapshot series.
+    private static void carryResourcesIntoContext(LpContext ctx, List<IndicatorResult> results)
+    {
+        for (IndicatorResult r : results)
+        {
+            if (r != null && r.isPresent() && "Raum".equals(r.indicator))
+            {
+                ctx.latestRaumValue     = r.value;
+                ctx.latestRaumDate      = r.asOfDate;
+                ctx.latestRaumSourceUrl = r.sourceUrl;
+            }
+        }
+    }
+
+    private static void carryFundCloseIntoContext(LpContext ctx, List<IndicatorResult> results)
+    {
+        for (IndicatorResult r : results)
+        {
+            if (r != null && r.isPresent() && "FundClose".equals(r.indicator))
+            {
+                ctx.latestFundCloseValue     = r.value;
+                ctx.latestFundCloseDate      = r.asOfDate;
+                ctx.latestFundCloseSourceUrl = r.sourceUrl;
+            }
+        }
     }
 
     private static List<IndicatorResult> runAxis(
@@ -357,27 +407,111 @@ public class LPScoreProcessor
             {
                 IndicatorResult r = ind.fetch(ctx, cache);
                 if (r == null) r = IndicatorResult.empty(ind.axis());
+                r.indicator = ind.name();
                 out.add(r);
             }
             catch (Exception e)
             {
                 System.err.println("[LPScoreProcessor] " + ind.name() + " failed: " + e.getMessage());
-                out.add(IndicatorResult.empty(ind.axis()));
+                IndicatorResult failed = IndicatorResult.empty(ind.axis());
+                failed.indicator = ind.name();
+                out.add(failed);
             }
         }
         return out;
     }
 
-    private static double rollupAxis(List<IndicatorResult> results)
+    /*
+     * The outcome of rolling up one axis.
+     *
+     * hasEvidence is the field that fixes the "everything is 0" complaint: it
+     * distinguishes "we measured this and it is low" from "no leaf found anything".
+     * Only the first deserves a number in the sheet. Callers must check it before
+     * treating score as meaningful.
+     */
+    private static class AxisRollup
     {
-        if (results == null || results.isEmpty()) return 0.0;
-        double sum = 0.0;
-        int count = 0;
+        boolean hasEvidence = false;
+        double score = 0.0;        // 0..1 magnitude, meaningless unless hasEvidence
+        double confidence = 0.0;   // trust in the leaf/leaves behind that score
+    }
+
+    /*
+     * Single-fact rollup: the best-evidenced leaf wins outright.
+     *
+     * Used for RESOURCES, where the leaves are ranked sources answering ONE question
+     * (1A filed RAUM > 1B filed 990 > 1C reported AUM > 1D headcount proxy). A firm
+     * has one balance sheet; averaging a regulator filing against a LinkedIn size
+     * band does not produce a better estimate of it, just a worse one.
+     */
+    private static AxisRollup rollupBestSource(List<IndicatorResult> results)
+    {
+        AxisRollup out = new AxisRollup();
+        if (results == null) return out;
+
+        IndicatorResult best = null;
         for (IndicatorResult r : results)
         {
-            if (r != null && r.isPresent()) { sum += r.confidence; count++; }
+            if (r == null || !r.isPresent()) continue;
+            if (best == null
+                || r.confidence > best.confidence
+                || (r.confidence == best.confidence && r.score > best.score))
+            {
+                best = r;
+            }
         }
-        return count > 0 ? sum / count : 0.0;
+        if (best == null) return out;
+
+        out.hasEvidence = true;
+        out.score = best.score;
+        out.confidence = best.confidence;
+        return out;
+    }
+
+    /*
+     * Multi-signal rollup: confidence-weighted mean of the leaf SCORES.
+     *
+     * Used for FIT and PROBABILITY_NOW, where each leaf is an independent piece of a
+     * composite judgement and more corroboration genuinely means more signal.
+     *
+     * The weighting is the crux of the original bug. This used to average the
+     * CONFIDENCE values and write that as the score, so the axis reported how
+     * trustworthy its sources were rather than what they said — a $50M LP and a $50B
+     * LP with equally clean filings scored the same 90. Confidence now only decides
+     * how loudly each leaf speaks; the score is what it says.
+     */
+    private static AxisRollup rollupWeightedMean(List<IndicatorResult> results)
+    {
+        AxisRollup out = new AxisRollup();
+        if (results == null) return out;
+
+        double weightedSum = 0.0;
+        double weightTotal = 0.0;
+        double confSum = 0.0;
+        int count = 0;
+
+        for (IndicatorResult r : results)
+        {
+            if (r == null || !r.isPresent()) continue;
+            weightedSum += r.score * r.confidence;
+            weightTotal += r.confidence;
+            confSum += r.confidence;
+            count++;
+        }
+
+        if (count == 0 || weightTotal <= 0.0) return out;
+
+        out.hasEvidence = true;
+        out.score = clamp01(weightedSum / weightTotal);
+        out.confidence = confSum / count;
+        return out;
+    }
+
+    private static double clamp01(double v)
+    {
+        if (v < 0.0) return 0.0;
+        if (v > 1.0) return 1.0;
+        return v;
     }
 
     private static String buildIntelligenceJson(
@@ -409,7 +543,12 @@ public class LPScoreProcessor
         {
             if (r == null) continue;
             JSONObject o = new JSONObject();
+            // "indicator" says WHICH leaf produced (or missed) this. Without it an
+            // all-empty axis is a wall of identical blank objects and there is no way
+            // to tell which source failed.
+            o.put("indicator", safe(r.indicator));
             o.put("value", truncate(safe(r.value), 2000));
+            o.put("score", r.score);
             o.put("confidence", r.confidence);
             o.put("sourceUrl", safe(r.sourceUrl));
             o.put("asOfDate", safe(r.asOfDate));
@@ -460,9 +599,12 @@ public class LPScoreProcessor
                 if (!isBlank(r.identityKeys.status)) idStatData[idx][0] = r.identityKeys.status;
             }
 
-            resData[idx][0]    = String.format("%.0f", r.resourcesScore * 100);
-            fitData[idx][0]    = String.format("%.0f", r.fitScore * 100);
-            probData[idx][0]   = String.format("%.0f", r.probabilityNow * 100);
+            // Blank, not zero, for an axis with no evidence behind it. Writing 0
+            // told the GP "this LP cannot spare a cent" when the truth was "no leaf
+            // returned anything for this LP".
+            resData[idx][0]  = r.hasResources ? String.format("%.0f", r.resourcesScore * 100) : "";
+            fitData[idx][0]  = r.hasFit       ? String.format("%.0f", r.fitScore * 100)       : "";
+            probData[idx][0] = r.hasProbNow   ? String.format("%.0f", r.probabilityNow * 100) : "";
             dateData[idx][0]   = safe(r.lastIntelDate);
             statusData[idx][0] = safe(r.intelStatus);
             jsonData[idx][0]   = truncate(safe(r.intelligenceJson), INTEL_JSON_MAX);
@@ -734,6 +876,12 @@ public class LPScoreProcessor
         double resourcesScore  = 0.0;
         double fitScore        = 0.0;
         double probabilityNow  = 0.0;
+        // Whether each axis actually found anything. False means the corresponding
+        // score is meaningless and its cell must be written BLANK, not 0 — 0 is a
+        // measured verdict ("this LP has almost nothing"), absence is not.
+        boolean hasResources   = false;
+        boolean hasFit         = false;
+        boolean hasProbNow     = false;
         String lastIntelDate   = LocalDate.now().toString();
         String intelStatus     = STATUS_FAILED;
         String intelligenceJson = "{}";
@@ -751,20 +899,7 @@ public class LPScoreProcessor
     // Minor utilities
     // -----------------------------------------------------------------------
 
-    private static String indicatorNameOf(IndicatorResult r, List<Indicator> indicators)
-    {
-        for (Indicator ind : indicators)
-        {
-            if (r.theme != null && r.theme.contains(ind.name())) return ind.name();
-        }
-        return "";
-    }
 
-    private static boolean isFundCloseResult(IndicatorResult r)
-    {
-        return r.evidence != null && r.evidence.toLowerCase().contains("fund")
-            && r.evidence.toLowerCase().contains("close");
-    }
 
     private static String cell(String[][] col, int idx)
     {

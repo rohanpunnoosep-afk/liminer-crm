@@ -22,6 +22,11 @@ import org.json.JSONObject;
  */
 public class ProPublicaNonprofitClient
 {
+    // Jaccard floor for accepting two firm names as the same entity without a
+    // domain anchor. Raising it makes identity resolution stricter; lowering it
+    // reopens the subset-name collisions this threshold exists to stop.
+    private static final double NAME_MATCH_THRESHOLD = 0.75;
+
     private static final HttpClient CLIENT0 = HttpClient.newHttpClient();
     private static final String USER_AGENT0 = HttpContact.USER_AGENT0;
     private static final int TIMEOUT_SECS0  = 20;
@@ -42,21 +47,40 @@ public class ProPublicaNonprofitClient
     }
 
     // Resolve an organization name to an EIN. Returns "" when unresolved.
-    public String lookupEinByName(String name0)
+    // A nonprofit candidate plus the evidence needed to corroborate it.
+    public static class OrgMatch
     {
-        if (isBlank(name0)) return "";
+        public String ein       = "";
+        public String name      = "";
+        public String city      = "";
+        public String state     = "";
+        public boolean nameMatch = false;
+    }
+
+    /**
+     * Search ProPublica for an organization by name, returning the candidate WITH its
+     * identifying detail so IdentityResolver can verify it. Returns null when no
+     * organization's name actually matches.
+     *
+     * The previous version ended with `else if (bestEin is blank) bestEin = ein` — it
+     * returned whatever ProPublica ranked first even on a zero-token name match. That
+     * is how "Nelson Advisors" (a UK advisory firm) was assigned EIN 611400414,
+     * "Nelson County Horticulture Advisory Board" of Bardstown KY. There is no such
+     * fallthrough now: no name match means no candidate.
+     */
+    public OrgMatch lookupOrg(String name0)
+    {
+        if (isBlank(name0)) return null;
         try
         {
             String enc0  = URLEncoder.encode(name0.trim(), StandardCharsets.UTF_8);
             String body0 = get(BASE0 + "/search.json?q=" + enc0);
-            if (isBlank(body0)) return "";
+            if (isBlank(body0)) return null;
 
             JSONArray orgs0 = new JSONObject(body0).optJSONArray("organizations");
-            if (orgs0 == null || orgs0.length() == 0) return "";
+            if (orgs0 == null || orgs0.length() == 0) return null;
 
             String normTarget0 = normName(name0);
-            String bestEin0    = "";
-            boolean strongMatch0 = false;
 
             for (int i0 = 0; i0 < orgs0.length(); i0++)
             {
@@ -65,24 +89,35 @@ public class ProPublicaNonprofitClient
                 long ein0 = org0.optLong("ein", -1L);
                 if (ein0 <= 0) continue;
 
-                boolean strong0 = nameStrong(normTarget0, normName(org0.optString("name", "")));
-                if (strong0 && !strongMatch0)
-                {
-                    bestEin0    = String.valueOf(ein0);
-                    strongMatch0 = true;
-                }
-                else if (isBlank(bestEin0))
-                {
-                    bestEin0 = String.valueOf(ein0);
-                }
+                String orgName0 = org0.optString("name", "");
+                if (!nameStrong(normTarget0, normName(orgName0))) continue;
+
+                OrgMatch match0 = new OrgMatch();
+                match0.ein       = String.valueOf(ein0);
+                match0.name      = orgName0;
+                match0.city      = org0.optString("city", "");
+                match0.state     = org0.optString("state", "");
+                match0.nameMatch = true;
+                return match0;
             }
-            return bestEin0;
+            return null;
         }
         catch (Exception e0)
         {
-            System.err.println("[ProPublica] lookupEinByName \"" + name0 + "\": " + e0.getMessage());
-            return "";
+            System.err.println("[ProPublica] lookupOrg \"" + name0 + "\": " + e0.getMessage());
+            return null;
         }
+    }
+
+    /**
+     * Back-compatible thin wrapper over lookupOrg. Prefer lookupOrg — a bare EIN
+     * carries none of the evidence a caller needs to judge whether it is the right
+     * organization.
+     */
+    public String lookupEinByName(String name0)
+    {
+        OrgMatch match0 = lookupOrg(name0);
+        return match0 == null ? "" : match0.ein;
     }
 
     // Fetch the latest 990 balance-sheet figures for an EIN.
@@ -228,30 +263,56 @@ public class ProPublicaNonprofitClient
     // Name matching
     // -----------------------------------------------------------------------
 
+    /*
+     * Normalize a firm name for comparison. Strips ONLY true legal-entity suffixes.
+     *
+     * It deliberately no longer strips business words (capital / advisors / partners /
+     * management / group / fund / ventures). Stripping those reduced both
+     * "Nelson Advisors" and "Nelson Capital Advisors" to the single token "nelson",
+     * making two unrelated firms an EXACT match — the distinguishing word is exactly
+     * the word that was being thrown away. Do not re-add them to this list.
+     */
     private static String normName(String s0)
     {
         if (isBlank(s0)) return "";
         return s0.toLowerCase()
-            .replaceAll("\\b(inc\\.?|llc\\.?|lp\\.?|llp\\.?|corp\\.?|ltd\\.?|foundation|"
-                + "management|group|fund|trust|company|co\\.?)\\b", " ")
+            .replaceAll("\\b(inc\\.?|llc\\.?|l\\.l\\.c\\.?|lp\\.?|llp\\.?|plc\\.?|"
+                + "corp\\.?|corporation|ltd\\.?|limited|co\\.?|company|the)\\b", " ")
             .replaceAll("[^a-z0-9 ]", " ")
             .replaceAll("\\s+", " ")
             .trim();
     }
 
-    // True if normalized names share ≥60% of the shorter name's tokens.
+    /*
+     * Strong name agreement, measured as Jaccard overlap (shared tokens over the
+     * UNION) at NAME_MATCH_THRESHOLD.
+     *
+     * The previous measure divided by the SMALLER token set, so any name that was a
+     * strict subset of another scored a perfect 1.0 — "Nelson Advisors" matched
+     * "Nelson Capital Advisors" outright. Jaccard charges for the extra token
+     * (2/3 = 0.67), which falls below the threshold, so a subset name now requires a
+     * domain anchor rather than passing on its own.
+     */
     private static boolean nameStrong(String a0, String b0)
     {
         if (isBlank(a0) || isBlank(b0)) return false;
         if (a0.equals(b0)) return true;
-        String[] ta0 = a0.split(" ");
-        String[] tb0 = b0.split(" ");
-        int common0 = 0;
-        for (String x0 : ta0)
-            for (String y0 : tb0)
-                if (x0.equals(y0)) { common0++; break; }
-        int min0 = Math.min(ta0.length, tb0.length);
-        return min0 > 0 && (double) common0 / min0 >= 0.6;
+
+        java.util.HashSet<String> ta0 =
+            new java.util.HashSet<String>(java.util.Arrays.asList(a0.split(" ")));
+        java.util.HashSet<String> tb0 =
+            new java.util.HashSet<String>(java.util.Arrays.asList(b0.split(" ")));
+        ta0.remove("");
+        tb0.remove("");
+        if (ta0.isEmpty() || tb0.isEmpty()) return false;
+
+        java.util.HashSet<String> shared0 = new java.util.HashSet<String>(ta0);
+        shared0.retainAll(tb0);
+
+        java.util.HashSet<String> union0 = new java.util.HashSet<String>(ta0);
+        union0.addAll(tb0);
+
+        return (double) shared0.size() / (double) union0.size() >= NAME_MATCH_THRESHOLD;
     }
 
     private static boolean isBlank(String s0) { return s0 == null || s0.trim().isEmpty(); }

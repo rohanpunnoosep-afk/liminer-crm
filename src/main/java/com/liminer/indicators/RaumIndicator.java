@@ -64,16 +64,29 @@ public class RaumIndicator implements Indicator
         {
             value0.append("; discretionary ").append(part1.discretionaryRaum.trim());
         }
+        if (!isBlank(part1.nonDiscretionaryRaum))
+        {
+            value0.append("; non-discretionary ").append(part1.nonDiscretionaryRaum.trim());
+        }
         if (!isBlank(part1.numAccounts))
         {
             value0.append("; accounts ").append(part1.numAccounts.trim());
         }
         value0.append(" (ADV filed ").append(asOf0).append(")");
 
-        return new IndicatorResult(value0.toString(), FILING_CONFIDENCE,
+        // The SCORE is capital magnitude; the CONFIDENCE is how much we trust the
+        // reading. Both discretionary and non-discretionary RAUM count toward size:
+        // Item 5.F(2)(c) is the total the SEC itself uses to classify a "large
+        // advisory firm", and non-discretionary assets are still assets the adviser
+        // can steer into a fund — they just need the client to say yes.
+        double score0 = ResourceScale.scoreForMoneyText(part1.raum);
+        if (score0 < 0.0) return IndicatorResult.empty(AXIS_RESOURCES);
+
+        return new IndicatorResult(value0.toString(), FILING_CONFIDENCE, score0,
             "https://adviserinfo.sec.gov/firm/summary/" + crd0,
             asOf0, AXIS_RESOURCES,
-            "Form ADV Part 1 Item 5.F via IAPD, keyed by pre-resolved CRD " + crd0 + ".");
+            "Form ADV Part 1 Item 5.F, parsed from the filed ADV, keyed by pre-resolved CRD "
+            + crd0 + ".");
     }
 
     private static boolean isBlank(String s0) { return s0 == null || s0.trim().isEmpty(); }

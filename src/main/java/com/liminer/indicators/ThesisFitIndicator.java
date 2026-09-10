@@ -27,6 +27,8 @@ public class ThesisFitIndicator implements Indicator
     // Sector alignment dominates; geography is a weaker corroborator.
     private static final double SECTOR_WEIGHT = 0.70;
     private static final double GEO_WEIGHT = 0.30;
+    // Certainty that the LP's enrichment tags describe the LP correctly.
+    private static final double TAG_CONFIDENCE = 0.70;
 
     @Override
     public String axis() { return AXIS_FIT; }
@@ -63,13 +65,22 @@ public class ThesisFitIndicator implements Indicator
 
         // Weighted only over the axes the LP actually has tags for, so an LP with
         // sectors-but-no-geo is not penalized for missing geography.
-        double confidence0 = weighted(sectorOverlap0, lpSectors0.isEmpty(),
-                                      geoOverlap0, lpGeos0.isEmpty());
+        // Tag overlap is a MAGNITUDE (how well aligned), not a certainty. It used to
+        // be reported as confidence, which meant a weak-but-certain alignment was
+        // indistinguishable from a strong-but-doubtful one, and the rollup averaged
+        // the two kinds of number together.
+        double score0 = weighted(sectorOverlap0, lpSectors0.isEmpty(),
+                                 geoOverlap0, lpGeos0.isEmpty());
+
+        // We are quite sure WHAT the tags say — they are already on the row. The
+        // uncertainty is upstream, in how well enrichment inferred them, so this sits
+        // below a regulator filing but well above a guess.
+        double confidence0 = TAG_CONFIDENCE;
 
         String asOf0 = isBlank(ctx.lastEnrichedAt) ? LocalDate.now().toString() : ctx.lastEnrichedAt.trim();
         String value0 = summarize(sectorMatches0, geoMatches0);
 
-        return new IndicatorResult(value0, confidence0, "enrichment-tags", asOf0, AXIS_FIT,
+        return new IndicatorResult(value0, confidence0, score0, "enrichment-tags", asOf0, AXIS_FIT,
             "Overlap of LP enrichment tags vs GP thesis (sector-weighted).");
     }
 
