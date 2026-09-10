@@ -1487,6 +1487,12 @@ public class BasicBackgroundChecker
             }
         }
 
+        // ---- FUND NAME BACKSTOP ----
+        // Runs last, and only when every LinkedIn-based path above left the fund name
+        // blank. An institutional email domain is strong evidence of the organization,
+        // so rather than leaving Fund Name empty we anchor on the domain.
+        resolveFundNameFromDomain(result0, emailDomain0);
+
         result0.overallConfidence = computeOverallConfidence(result0);
         result0.status = computeStatus(result0);
         if (result0.additionalContactCandidates != null && !result0.additionalContactCandidates.isEmpty())
@@ -3100,6 +3106,377 @@ public class BasicBackgroundChecker
     }
 
     // ============================================================
+    // FUND NAME BACKSTOP (DOMAIN-ANCHORED)
+    // ============================================================
+
+    // Descriptor and legal-suffix tokens that a firm routinely drops from its own
+    // domain ("Nelson Advisors" -> nelsonadvisors.co.uk, "Harbor Capital LLC" ->
+    // harborcapital.com). Used to let a candidate name still match its domain after
+    // the trailing token is removed.
+    private static final java.util.List<String> FUND_NAME_TRAILING_TOKENS0 =
+        java.util.Arrays.asList(
+            "llc", "llp", "lp", "inc", "ltd", "limited", "plc", "gmbh", "ag", "sa", "bv",
+            "co", "company", "corp", "corporation", "holdings", "holding", "group",
+            "partners", "partner", "advisors", "advisers", "advisory", "capital",
+            "ventures", "venture", "management", "investments", "investment", "fund",
+            "funds", "foundation", "trust", "associates", "asset", "assets");
+
+    /**
+     * Last-resort fund name resolution for a row whose LinkedIn paths all came up empty.
+     *
+     * A non-public email domain is a strong claim about which organization the contact
+     * belongs to, and until now that claim was only ever used to infer the fund WEBSITE —
+     * so a contact like lloyd@nelsonadvisors.co.uk could finish a background check with a
+     * bio that says "Co-Founder of Nelson Advisors", a website of nelsonadvisors.co.uk,
+     * and a still-blank Fund Name.
+     *
+     * Two tiers, best first:
+     *   1. Evidence-confirmed. Every organization name this run already collected
+     *      (current employer from the bio's work history, bio institutions, the
+     *      contact's LinkedIn company) is compared against the domain's registrable
+     *      label. A match means the domain and a real, properly spaced name agree, so
+     *      that spelling is used at high confidence.
+     *   2. Domain-only. Nothing matched, so the label itself is used, title-cased and
+     *      split on separators. Written at the same confidence the sibling fund-website
+     *      inference uses, and only into a blank cell.
+     */
+    static void resolveFundNameFromDomain(BackgroundCheckResult result0, String emailDomain0)
+    {
+        if (result0 == null || (result0.fundName != null && !isBlank(result0.fundName.value)))
+        {
+            return;
+        }
+
+        String domain0 = !isBlank(emailDomain0)
+            ? emailDomain0
+            : IdentityResolutionScorer.extractUsefulEmailDomain(
+                "x@" + safe(result0.fundWebsite != null ? result0.fundWebsite.value : ""));
+
+        String label0 = registrableLabel(domain0);
+
+        if (isBlank(label0))
+        {
+            return;
+        }
+
+        // The label keeps its separators so it can still be read as words below; matching
+        // compares the letters-and-digits form on both sides, so they never matter here.
+        String confirmed0 = matchCandidateToDomainLabel(
+            collectOrganizationCandidates(result0), compactAlphanumeric(label0));
+
+        if (!isBlank(confirmed0))
+        {
+            result0.fundName = new ResolvedField(
+                confirmed0, FUND_NAME_DOMAIN_CONFIRMED_CONFIDENCE0, domain0,
+                "organization named in this row's evidence, confirmed by the email domain");
+            result0.evidence.add(new EvidenceItem(
+                "fund_name_domain", "", domain0, FUND_NAME_DOMAIN_CONFIRMED_CONFIDENCE0,
+                "fund name \"" + confirmed0 + "\" confirmed against domain label \"" + label0 + "\""));
+            System.out.println("  Fund name from domain evidence: \"" + confirmed0 + "\"");
+            return;
+        }
+
+        String derived0 = titleCaseDomainLabel(label0);
+
+        if (isBlank(derived0))
+        {
+            return;
+        }
+
+        result0.fundName = new ResolvedField(
+            derived0, FUND_NAME_DOMAIN_ONLY_CONFIDENCE0, domain0,
+            "derived from the institutional email domain");
+        result0.evidence.add(new EvidenceItem(
+            "fund_name_domain", "", domain0, FUND_NAME_DOMAIN_ONLY_CONFIDENCE0,
+            "fund name derived from domain label \"" + label0 + "\"; no evidence name matched it"));
+        System.out.println("  Fund name derived from domain: \"" + derived0 + "\"");
+    }
+
+    /**
+     * Organization names this run already has on hand, most trustworthy first: the
+     * contact's current employer from the scraped bio work history, then earlier
+     * employers, then institutions named in the bio, then the LinkedIn company name.
+     */
+    static ArrayList<String> collectOrganizationCandidates(BackgroundCheckResult result0)
+    {
+        ArrayList<String> candidates0 = new ArrayList<>();
+
+        addWorkExperienceCompanies(candidates0,
+            result0.contactPastWorkExperience != null ? result0.contactPastWorkExperience.value : "");
+
+        addJsonStringArray(candidates0,
+            result0.contactBioInstitutions != null ? result0.contactBioInstitutions.value : "");
+
+        return candidates0;
+    }
+
+    private static void addWorkExperienceCompanies(ArrayList<String> candidates0, String workExperienceJson0)
+    {
+        if (isBlank(workExperienceJson0))
+        {
+            return;
+        }
+
+        try
+        {
+            JSONArray entries0 = new JSONArray(workExperienceJson0);
+
+            for (int i0 = 0; i0 < entries0.length(); i0++)
+            {
+                JSONObject entry0 = entries0.optJSONObject(i0);
+
+                if (entry0 == null)
+                {
+                    continue;
+                }
+
+                String company0 = safe(entry0.optString("company", "")).trim();
+
+                if (!isBlank(company0))
+                {
+                    candidates0.add(company0);
+                }
+            }
+        }
+        catch (Exception exception0)
+        {
+            // Not parseable as work history — nothing to contribute.
+        }
+    }
+
+    private static void addJsonStringArray(ArrayList<String> candidates0, String jsonArray0)
+    {
+        if (isBlank(jsonArray0))
+        {
+            return;
+        }
+
+        try
+        {
+            JSONArray entries0 = new JSONArray(jsonArray0);
+
+            for (int i0 = 0; i0 < entries0.length(); i0++)
+            {
+                String value0 = safe(entries0.optString(i0, "")).trim();
+
+                if (!isBlank(value0))
+                {
+                    candidates0.add(value0);
+                }
+            }
+        }
+        catch (Exception exception0)
+        {
+            // Not parseable as a string array — nothing to contribute.
+        }
+    }
+
+    /**
+     * Returns the first candidate whose letters-and-digits form equals the domain
+     * label, either whole ("Nelson Advisors" vs nelsonadvisors) or after dropping a
+     * trailing descriptor the firm left out of its domain ("Harbor Capital LLC" vs
+     * harborcapital). Comparison ignores spacing, punctuation and case, which is what
+     * makes a domain a reliable confirmation of a name's spelling rather than a guess.
+     */
+    static String matchCandidateToDomainLabel(ArrayList<String> candidates0, String label0)
+    {
+        for (String candidate0 : candidates0)
+        {
+            if (compactAlphanumeric(candidate0).equals(label0))
+            {
+                return candidate0.trim();
+            }
+        }
+
+        for (String candidate0 : candidates0)
+        {
+            String trimmed0 = dropTrailingDescriptor(candidate0);
+
+            if (!isBlank(trimmed0) && compactAlphanumeric(trimmed0).equals(label0))
+            {
+                return candidate0.trim();
+            }
+        }
+
+        return "";
+    }
+
+    private static String dropTrailingDescriptor(String candidate0)
+    {
+        String[] tokens0 = safe(candidate0).trim().split("\\s+");
+
+        if (tokens0.length < 2)
+        {
+            return "";
+        }
+
+        String last0 = tokens0[tokens0.length - 1].toLowerCase().replaceAll("[^a-z0-9]", "");
+
+        if (!FUND_NAME_TRAILING_TOKENS0.contains(last0))
+        {
+            return "";
+        }
+
+        StringBuilder rebuilt0 = new StringBuilder();
+
+        for (int i0 = 0; i0 < tokens0.length - 1; i0++)
+        {
+            if (rebuilt0.length() > 0)
+            {
+                rebuilt0.append(' ');
+            }
+
+            rebuilt0.append(tokens0[i0]);
+        }
+
+        return rebuilt0.toString();
+    }
+
+    /**
+     * The registrable label of a domain: the part a firm actually named itself after,
+     * with www and the public suffix removed. Handles multi-part suffixes such as
+     * co.uk and com.au, so nelsonadvisors.co.uk yields "nelsonadvisors".
+     */
+    static String registrableLabel(String domain0)
+    {
+        String cleaned0 = safe(domain0).trim().toLowerCase();
+        cleaned0 = cleaned0.replaceAll("^https?://", "");
+        cleaned0 = cleaned0.replaceAll("^www\\.", "");
+
+        int slashIdx0 = cleaned0.indexOf('/');
+
+        if (slashIdx0 >= 0)
+        {
+            cleaned0 = cleaned0.substring(0, slashIdx0);
+        }
+
+        String[] parts0 = cleaned0.split("\\.");
+
+        if (parts0.length < 2)
+        {
+            return "";
+        }
+
+        // Walk in from the right past the public suffix parts (uk, co.uk, com.au...).
+        int labelIdx0 = parts0.length - 2;
+
+        if (parts0.length >= 3 && SECOND_LEVEL_SUFFIXES0.contains(parts0[parts0.length - 2]))
+        {
+            labelIdx0 = parts0.length - 3;
+        }
+
+        // Hyphens and underscores survive: they are the firm's own word boundaries
+        // ("meridian-partners.com"), and the only boundaries a domain ever gives us.
+        String label0 = parts0[labelIdx0].replaceAll("[^a-z0-9_-]", "");
+
+        // A bare "mail"/"email" style host tells us nothing about the organization.
+        return GENERIC_HOST_LABELS0.contains(compactAlphanumeric(label0)) ? "" : label0;
+    }
+
+    private static final java.util.Set<String> SECOND_LEVEL_SUFFIXES0 =
+        new java.util.HashSet<>(java.util.Arrays.asList(
+            "co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "go"));
+
+    private static final java.util.Set<String> GENERIC_HOST_LABELS0 =
+        new java.util.HashSet<>(java.util.Arrays.asList(
+            "mail", "email", "smtp", "webmail", "inbox", "mx"));
+
+    // Descriptors distinctive enough to split off the end of a run-together domain
+    // label without mangling an ordinary word. Deliberately narrower than
+    // FUND_NAME_TRAILING_TOKENS0: generic nouns like "bank", "co" or "trust" appear
+    // inside real single words and would produce nonsense ("Scotia Bank").
+    private static final java.util.List<String> FUND_NAME_SPLITTABLE_DESCRIPTORS0 =
+        java.util.Arrays.asList(
+            "advisors", "advisers", "advisory", "partners", "partnership", "partnerships",
+            "capital", "ventures", "management", "investments", "foundation",
+            "holdings", "associates", "endowment");
+
+    private static final double FUND_NAME_DOMAIN_CONFIRMED_CONFIDENCE0 = 0.92;
+    private static final double FUND_NAME_DOMAIN_ONLY_CONFIDENCE0 = 0.72;
+
+    // Bar for writing into a Fund Name cell that is currently empty. Matches the
+    // fund-website inference's bar, since both rest on the same evidence: a
+    // non-public email domain identifying the contact's organization.
+    static final double FUND_NAME_BLANK_CELL_MIN_CONFIDENCE0 = 0.70;
+
+    private static String compactAlphanumeric(String value0)
+    {
+        return safe(value0).toLowerCase().replaceAll("[^a-z0-9]", "");
+    }
+
+    /**
+     * Splits a known industry descriptor off the end of a run-together label. The
+     * remaining stem must be at least three characters, so a label that IS just the
+     * descriptor ("advisors") is left alone rather than reduced to nothing.
+     */
+    private static String splitTrailingDescriptor(String spaced0)
+    {
+        if (spaced0 == null || spaced0.contains(" "))
+        {
+            return safe(spaced0);
+        }
+
+        for (String descriptor0 : FUND_NAME_SPLITTABLE_DESCRIPTORS0)
+        {
+            if (!spaced0.endsWith(descriptor0))
+            {
+                continue;
+            }
+
+            String stem0 = spaced0.substring(0, spaced0.length() - descriptor0.length());
+
+            if (stem0.length() >= 3)
+            {
+                return stem0 + " " + descriptor0;
+            }
+        }
+
+        return spaced0;
+    }
+
+    /**
+     * Renders a domain label as a fund name: separators become spaces, a trailing
+     * industry descriptor the firm ran together with its name is split back off
+     * ("nelsonadvisors" -> "Nelson Advisors", "harborcapital" -> "Harbor Capital"),
+     * and every word is title-cased.
+     *
+     * Only the descriptor list is ever split on, and only at the end of the label, so
+     * an ordinary word that merely ends in those letters is left whole ("scotiabank"
+     * stays "Scotiabank" — "bank" is deliberately not a descriptor). Whatever cannot
+     * be segmented stays one word, which is why this tier is written at the lower,
+     * website-style confidence.
+     */
+    static String titleCaseDomainLabel(String label0)
+    {
+        String spaced0 = splitTrailingDescriptor(safe(label0).replaceAll("[-_]+", " ").trim());
+
+        if (spaced0.isEmpty())
+        {
+            return "";
+        }
+
+        String[] words0 = spaced0.split("\\s+");
+        StringBuilder built0 = new StringBuilder();
+
+        for (String word0 : words0)
+        {
+            if (word0.isEmpty())
+            {
+                continue;
+            }
+
+            if (built0.length() > 0)
+            {
+                built0.append(' ');
+            }
+
+            built0.append(Character.toUpperCase(word0.charAt(0))).append(word0.substring(1));
+        }
+
+        return built0.toString();
+    }
+
+    // ============================================================
     // CRM WRITE-BACK
     // ============================================================
 
@@ -3243,10 +3620,16 @@ public class BasicBackgroundChecker
 
         String inputFundName0 = result0.input != null ? safe(result0.input.fundName).trim() : "";
         String resolvedFundName0 = result0.fundName != null ? safe(result0.fundName.value).trim() : "";
-        v0[WRITE_FUND_NAME] = (!isBlank(resolvedFundName0)
-            && (isBlank(inputFundName0) || !resolvedFundName0.equalsIgnoreCase(inputFundName0))
-            && IdentityResolutionScorer.isSafeToAutoWrite(
-                result0.fundName != null ? result0.fundName.confidence : 0.0))
+        double fundNameConfidence0 = result0.fundName != null ? result0.fundName.confidence : 0.0;
+        // Overwriting a fund name the GP already has demands the full auto-write bar.
+        // Filling a BLANK one only needs the same bar as the sibling fund-website
+        // inference below, so a domain-derived name lands instead of leaving the cell
+        // empty — an empty Fund Name is what this rule exists to prevent.
+        boolean fundNameWriteAllowed0 = isBlank(inputFundName0)
+            ? fundNameConfidence0 >= FUND_NAME_BLANK_CELL_MIN_CONFIDENCE0
+            : (!resolvedFundName0.equalsIgnoreCase(inputFundName0)
+                && IdentityResolutionScorer.isSafeToAutoWrite(fundNameConfidence0));
+        v0[WRITE_FUND_NAME] = (!isBlank(resolvedFundName0) && fundNameWriteAllowed0)
             ? resolvedFundName0 : null;
 
         String inputFundWebsite0 = result0.input != null ? safe(result0.input.fundWebsite).trim() : "";

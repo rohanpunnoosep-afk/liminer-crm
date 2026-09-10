@@ -270,8 +270,14 @@ public class CRMFieldRegistry
             + "2. Fund names often appear in email domains, signatures, sender organization names, or phrases like Partner at, Managing Director at, from, or on behalf of.\n"
             + "3. Do not return the internal fund name.\n"
             + "4. Do not invent a fund name from a generic email domain like gmail.com, outlook.com, yahoo.com, icloud.com, or protonmail.com.\n"
-            + "5. If the organization is not clear, return an empty string.\n"
-            + "6. Examples of fund-like names include: Sequoia Capital, Andreessen Horowitz, Accel, Bessemer Venture Partners, General Catalyst, Lightspeed Venture Partners, Founders Fund, Khosla Ventures, NEA, Insight Partners, Index Ventures, Union Square Ventures, Kapor Capital, Acumen, BlueOrchard, FMO, LGT Venture Philanthropy, Global Innovation Fund, ImpactAssets, Omidyar Network, Ford Foundation, Rockefeller Foundation.");
+            + "5. If no organization is named anywhere in the email, fall back to the external email domain. "
+            + "A non-generic domain is a strong signal of the organization, so lean toward it rather than returning nothing. "
+            + "Read the domain as words and write it the way the firm would: "
+            + "lloyd@nelsonadvisors.co.uk gives \"Nelson Advisors\", jsmith@harborfoundation.ca gives \"Harbor Foundation\", "
+            + "k.tan@bridgewatercapital.com gives \"Bridgewater Capital\". "
+            + "Do not add words the domain does not contain.\n"
+            + "6. Only return an empty string when there is neither a named organization nor a non-generic external domain.\n"
+            + "7. Examples of fund-like names include: Sequoia Capital, Andreessen Horowitz, Accel, Bessemer Venture Partners, General Catalyst, Lightspeed Venture Partners, Founders Fund, Khosla Ventures, NEA, Insight Partners, Index Ventures, Union Square Ventures, Kapor Capital, Acumen, BlueOrchard, FMO, LGT Venture Philanthropy, Global Innovation Fund, ImpactAssets, Omidyar Network, Ford Foundation, Rockefeller Foundation.");
 
         reg("intakeTabExtractedFundWebsiteCol", "Extracted Fund Website", "Extracted Fund Website", "text", "intake", true, true, true,
             "fundWebsite",
