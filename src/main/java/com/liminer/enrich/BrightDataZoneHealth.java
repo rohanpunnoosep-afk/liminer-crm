@@ -44,8 +44,40 @@ public final class BrightDataZoneHealth
     private static final AtomicReference<String> UNUSABLE_SAMPLE0 =
         new AtomicReference<>(null);
 
+    /*
+     * Prefix of the x-brd-err-code values that describe the TARGET SITE rather than
+     * the zone: "policy_20050 -- Forbidden: target site requires special permission",
+     * which Bright Data returns for compliance-gated domains (youtube.com, some
+     * social networks) on an otherwise perfectly healthy zone.
+     */
+    private static final String TARGET_POLICY_CODE_PREFIX0 = "policy_";
+
     private BrightDataZoneHealth()
     {
+    }
+
+    /*
+     * Whether an x-brd-err-code describes the ZONE or just the one URL requested.
+     *
+     * Bright Data signals both through the same header, but they need opposite
+     * handling. A zone fault (zone_not_found, a bad token, an exhausted account)
+     * dooms every remaining call, so it must latch and stop the run. A target
+     * policy rejection means only that this particular domain is off-limits on
+     * this zone -- the very next URL succeeds -- so it must NOT latch.
+     *
+     * Conflating them is not hypothetical: one youtube.com URL that turned up in a
+     * bio-candidate list latched the global fault mid-run, which then failed-fast
+     * every later SERP and unlocker call and made the workflow discard eight rows
+     * of findings it had already made, reporting "No enrichment was performed".
+     */
+    static boolean isZoneLevelCode(String errorCode0)
+    {
+        if (errorCode0 == null)
+        {
+            return false;
+        }
+
+        return !errorCode0.trim().toLowerCase().startsWith(TARGET_POLICY_CODE_PREFIX0);
     }
 
     /*

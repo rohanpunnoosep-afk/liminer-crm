@@ -40,6 +40,9 @@ public class BrightDataTransportTestMain
             testZoneErrorHeaderRaisesException();
 
             BrightDataZoneHealth.reset();
+            testTargetPolicyRejectionDoesNotLatchTheZone();
+
+            BrightDataZoneHealth.reset();
             testNoZoneErrorHeaderReturnsBodyUnchanged();
 
             BrightDataZoneHealth.reset();
@@ -104,6 +107,54 @@ public class BrightDataTransportTestMain
         check("x-brd-err-code on a 200 response raises an exception", threw0);
         check("exception message contains the zone name", message0.contains("serp_api2"));
         check("exception message contains the error code", message0.contains("zone_not_found"));
+    }
+
+    // ---------- (b2) target policy rejection is NOT a dead zone ----------
+
+    /*
+     * policy_20050 is "Forbidden: target site requires special permission" -- a
+     * compliance gate on the URL requested (youtube.com and friends), returned by a
+     * zone that is otherwise perfectly healthy. Latching it condemned the whole run:
+     * one youtube.com URL in a bio-candidate list tripped the global fault, every
+     * later SERP and unlocker call then failed fast, and the background check threw
+     * away eight rows of findings while reporting "No enrichment was performed".
+     *
+     * The call must still fail (that URL is genuinely unreachable), but the zone must
+     * stay healthy so the next URL is attempted.
+     */
+    private static void testTargetPolicyRejectionDoesNotLatchTheZone() throws Exception
+    {
+        BrightDataHttp.callFactory = fakeFactory(200, "x-brd-err-code: policy_20050", "{}");
+
+        boolean threw0 = false;
+        try
+        {
+            BrightDataHttp.post("https://api.brightdata.com/request", "{}", "token", "web_unlocker2");
+        }
+        catch (RuntimeException exception0)
+        {
+            threw0 = true;
+        }
+
+        check("policy_20050 still fails the individual request", threw0);
+        check("policy_20050 does not latch a zone fault", BrightDataZoneHealth.isHealthy());
+        check("policy_20050 leaves no fault summary to abort the run",
+            BrightDataZoneHealth.faultSummary() == null);
+
+        // And the very next call on that same zone must go through, not fail fast.
+        String canned0 = "{\"organic\":[]}";
+        BrightDataHttp.callFactory = fakeFactory(200, null, canned0);
+
+        BrightDataHttp.Result next0 = BrightDataHttp.post(
+            "https://api.brightdata.com/request", "{}", "token", "web_unlocker2");
+
+        check("a request after a policy rejection still reaches the zone",
+            next0.status == 200 && canned0.equals(next0.body));
+
+        check("a genuine zone code is still classified as zone-level",
+            BrightDataZoneHealth.isZoneLevelCode("zone_not_found"));
+        check("a policy code is classified as target-level",
+            !BrightDataZoneHealth.isZoneLevelCode("policy_20050"));
     }
 
     // ---------- (c) no error header -> body unchanged ----------

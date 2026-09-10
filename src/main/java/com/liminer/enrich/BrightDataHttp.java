@@ -134,12 +134,18 @@ final class BrightDataHttp
 
             if (errCode0 != null && !errCode0.trim().isEmpty())
             {
+                String trimmedCode0 = errCode0.trim();
                 BrightDataZoneException fault0 =
-                    new BrightDataZoneException(zoneLabel0, errCode0.trim());
-                if (honorZoneHealthGate0)
+                    new BrightDataZoneException(zoneLabel0, trimmedCode0);
+
+                // Latch only codes that condemn the zone. A target policy rejection
+                // ("this domain needs KYC") says nothing about the zone's health, and
+                // latching it would fail-fast every later call over one blocked URL.
+                if (honorZoneHealthGate0 && BrightDataZoneHealth.isZoneLevelCode(trimmedCode0))
                 {
                     BrightDataZoneHealth.recordFault(fault0);
                 }
+
                 throw fault0;
             }
 

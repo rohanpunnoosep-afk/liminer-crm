@@ -2,7 +2,7 @@ package com.liminer.indicators;
 
 import com.liminer.brief.DocumentSectionExtractor;
 import com.liminer.core.LpContext;
-import com.liminer.enrich.EdgarClient;
+import com.liminer.enrich.IapdClient;
 import com.liminer.enrich.ScrapeCache;
 
 import java.time.LocalDate;
@@ -18,8 +18,10 @@ import java.time.LocalDate;
  * key section — but in the Rock Creek brochure it runs pp.14-58. DocumentSectionExtractor
  * isolates only that span before passing it to the LLM.
  *
- * Gate: only runs when CRD or CIK is resolved AND ThesisFitIndicator confidence <
+ * Gate: only runs when identity is resolved AND ThesisFitIndicator confidence <
  * THESIS_FIT_GATE_THRESHOLD. This keeps it as a targeted fallback, not a default.
+ * A resolved CIK alone is not enough to go further: brochures are indexed by CRD,
+ * so a CIK-only LP stops here rather than guessing at a firm.
  *
  * Raw brochure text NEVER leaves local variables — only the LLM summary lands in
  * the IndicatorResult, capped at 50k chars.
@@ -35,7 +37,7 @@ public class ADVStrategyIndicator implements Indicator
     // Qualitative leaf: contributes evidence, not a measured alignment magnitude.
     private static final double NEUTRAL_FIT_SCORE = 0.50;
 
-    private final EdgarClient edgarClient0 = new EdgarClient();
+    private final IapdClient iapdClient0 = new IapdClient();
 
     @Override
     public String axis() { return AXIS_FIT; }
@@ -58,10 +60,15 @@ public class ADVStrategyIndicator implements Indicator
         // We check the sectorTags density as a proxy when the score is not pre-computed.
         if (websiteThesisCoverageStrong(ctx)) return IndicatorResult.empty(AXIS_FIT);
 
-        // Fetch the ADV Part 2 brochure text (via EdgarClient — stub until live).
-        String crdOrCik = !isBlank(ctx.identityKeys.crd)
-            ? ctx.identityKeys.crd.trim() : ctx.identityKeys.cik.trim();
-        String brochureText = fetchBrochureText(crdOrCik, ctx.identityKeys.crd);
+        // Fetch the ADV Part 2A brochure. Only a CRD can address a brochure — the
+        // IAPD brochure index is keyed by CRD, and a CIK is an EDGAR identifier for
+        // a different filing system entirely. A CIK-only LP passes the identity gate
+        // above (other FIT leaves can use it) but has no brochure to read here.
+        if (isBlank(ctx.identityKeys.crd)) return IndicatorResult.empty(AXIS_FIT);
+        String crd = ctx.identityKeys.crd.trim();
+
+        IapdClient.BrochureResult brochure = iapdClient0.fetchPart2Brochure(crd);
+        String brochureText = brochure.text;
         if (isBlank(brochureText)) return IndicatorResult.empty(AXIS_FIT);
 
         // Extract only Item 8, not the whole brochure.
@@ -77,11 +84,14 @@ public class ADVStrategyIndicator implements Indicator
         String summary = summarizeItem8(item8Text, ctx.fundName, cache);
         if (isBlank(summary)) return IndicatorResult.empty(AXIS_FIT);
 
-        // asOfDate from the brochure filing date (sourced from EdgarClient submissions).
-        String filingDate = fetchBrochureFilingDate(crdOrCik, ctx.identityKeys.crd);
-        String asOf = isBlank(filingDate) ? LocalDate.now().toString() : filingDate;
+        // asOfDate is the date the brochure was submitted to the SEC, not today —
+        // a 2019 brochure must not read as current strategy.
+        String asOf = isBlank(brochure.filingDate)
+            ? LocalDate.now().toString() : brochure.filingDate;
 
-        String sourceUrl = buildAdviserUrl(ctx.identityKeys.crd, crdOrCik);
+        // Cite the brochure document itself when we have it, so the evidence is
+        // one click from the claim; fall back to the firm summary page.
+        String sourceUrl = isBlank(brochure.url) ? buildAdviserUrl(crd) : brochure.url;
         String truncSummary = summary.length() > MAX_SUMMARY_CHARS
             ? summary.substring(0, MAX_SUMMARY_CHARS) : summary;
 
@@ -91,8 +101,9 @@ public class ADVStrategyIndicator implements Indicator
         // upgraded to score alignment against the GP thesis, set the real value here.
         return new IndicatorResult(truncSummary, FILING_CONFIDENCE, NEUTRAL_FIT_SCORE,
             sourceUrl, asOf, AXIS_FIT,
-            "ADV Part 2 Item 8 strategy summary (section-extracted, " + item8Text.length()
-            + " chars extracted from brochure). CRD/CIK=" + crdOrCik + ".");
+            "ADV Part 2A Item 8 strategy summary (section-extracted, " + item8Text.length()
+            + " of " + brochureText.length() + " brochure chars). CRD=" + crd
+            + ", brochure version " + brochure.versionId + ".");
     }
 
     // -----------------------------------------------------------------------
@@ -111,21 +122,6 @@ public class ADVStrategyIndicator implements Indicator
     {
         if (isBlank(tags)) return 0;
         return tags.split("[,;]").length;
-    }
-
-    private String fetchBrochureText(String crdOrCik, String crd)
-    {
-        // TODO: when EdgarClient goes live, fetch Part 2 brochure text via CIK/CRD.
-        // For now (stub), return empty — indicator returns empty correctly.
-        // Expected call: edgarClient0.fetchSubmissions(crdOrCik) -> find Part 2A filing URL
-        //                -> WebsiteCrawlerService.scrapeUrl(brochureUrl) -> extractVisibleText
-        return "";
-    }
-
-    private String fetchBrochureFilingDate(String crdOrCik, String crd)
-    {
-        // TODO: read the filing date from the most recent Part 2A submission entry.
-        return "";
     }
 
     private String summarizeItem8(String item8Text, String lpName, ScrapeCache cache)
@@ -155,13 +151,9 @@ public class ADVStrategyIndicator implements Indicator
         }
     }
 
-    private static String buildAdviserUrl(String crd, String fallback)
+    private static String buildAdviserUrl(String crd)
     {
-        if (!isBlank(crd))
-        {
-            return "https://adviserinfo.sec.gov/firm/summary/" + crd.trim();
-        }
-        return "https://www.sec.gov/cgi-bin/browse-edgar?company=" + fallback;
+        return "https://adviserinfo.sec.gov/firm/summary/" + crd.trim();
     }
 
     private static boolean isBlank(String s) { return s == null || s.trim().isEmpty(); }

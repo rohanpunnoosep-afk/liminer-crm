@@ -241,8 +241,15 @@ public class NewAllocatorIndicator implements Indicator
     private static String buildValue(PersonCandidate p, String startDate, boolean isNew)
     {
         StringBuilder sb = new StringBuilder();
-        if (!isBlank(p.firstName)) sb.append(p.firstName).append(" ");
-        if (!isBlank(p.lastName)) sb.append(p.lastName);
+        // Join the name parts we actually have. A first-name-only source (a bio page
+        // that says "Nathalia, our CIO") must not render as "Nathalia , Chief
+        // Investment Officer" — the GP reads this string as evidence.
+        if (!isBlank(p.firstName)) sb.append(p.firstName.trim());
+        if (!isBlank(p.lastName))
+        {
+            if (sb.length() > 0) sb.append(" ");
+            sb.append(p.lastName.trim());
+        }
         if (!isBlank(p.title)) sb.append(", ").append(p.title);
         if (!isBlank(startDate)) sb.append("; started ").append(startDate);
         if (isNew) sb.append(" (new)");

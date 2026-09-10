@@ -13,7 +13,7 @@ import org.json.JSONObject;
 /*
  * IapdClient — client for the SEC IAPD firm data at adviserinfo.sec.gov.
  *
- * Two live capabilities:
+ * Three live capabilities:
  *
  *   lookupFirm   firm search API (api.adviserinfo.sec.gov/search/firm). Returns a
  *                FirmMatch carrying the CRD *and* the corroborating detail
@@ -28,6 +28,15 @@ import org.json.JSONObject;
  *                the RESOURCES axis for EVERY registered adviser in the CRM: the
  *                RaumIndicator asked for RAUM, got a blank Part1Result, returned
  *                empty, and the rollup scored 0.
+ *
+ *   fetchPart2Brochure
+ *                the firm's most recent Form ADV Part 2A brochure as text, found
+ *                through the brochures[] index on search/firm/{crd}?json=true and
+ *                downloaded from files.adviserinfo.sec.gov. This replaces the
+ *                second empty stub of the same shape: ADVStrategyIndicator asked
+ *                for brochure text, got "", and returned empty for every
+ *                registered adviser, so the FIT axis never heard the one strategy
+ *                disclosure some advisers publish anywhere.
  *
  * Why the PDF and not an API: the IAPD Part 1 structured endpoints are either
  * Forbidden (api.adviserinfo.sec.gov/firm/{crd}) or behind the SPA, and the one
@@ -61,6 +70,17 @@ public class IapdClient
     private static final int    PDF_TIMEOUT_SECS0 = 45;
     private static final String ADV_PDF_URL0   =
         "https://reports.adviserinfo.sec.gov/reports/ADV/";
+    // Per-firm IAPD record. Unlike the Part 1 structured endpoints this one is
+    // reachable unauthenticated, and it carries the brochures[] index that names
+    // every filed Part 2 document and its version id.
+    private static final String FIRM_JSON_URL0 =
+        "https://api.adviserinfo.sec.gov/search/firm/%s?json=true";
+    // The filed Part 2 brochure itself. reports.adviserinfo.sec.gov serves the
+    // Part 1 PDF but returns 403 for every brochure path tried; files.* is the
+    // public, unauthenticated document endpoint the IAPD site itself links to.
+    private static final String BROCHURE_URL0  =
+        "https://files.adviserinfo.sec.gov/IAPD/Content/Common/"
+        + "crd_iapd_Brochure.aspx?BRCHR_VRSN_ID=%s";
     private static final String SEARCH_URL0    =
         "https://api.adviserinfo.sec.gov/search/firm?query=%s" +
         "&hl=true&nrows=12&start=0&r=25&noDataBoost=false" +
@@ -80,6 +100,17 @@ public class IapdClient
         public String fiscalYearEnd        = "";
         public String filingDate           = "";   // ISO-8601, from the PDF header
         public String firmName             = "";   // header "Primary Business Name"
+    }
+
+    // The firm's filed Form ADV Part 2A brochure, as text. Blank text means "no
+    // readable Part 2A on file", never "the firm disclosed nothing".
+    public static class BrochureResult
+    {
+        public String text          = "";   // full extracted brochure text
+        public String filingDate    = "";   // ISO-8601, from brochures[].dateSubmitted
+        public String brochureName  = "";
+        public String versionId     = "";
+        public String url           = "";   // the document this text came from
     }
 
     // A CRD candidate plus the evidence needed to corroborate it. Returned by
@@ -279,11 +310,156 @@ public class IapdClient
         }
     }
 
-    /** Downloads the filed ADV PDF to a temp file and extracts its text. */
+    // -----------------------------------------------------------------------
+    // Form ADV Part 2A brochure (real, from the filed brochure PDF)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Downloads the firm's most recent Form ADV Part 2A firm brochure and returns
+     * its extracted text plus the date it was submitted.
+     *
+     * Two hops, both public and unauthenticated:
+     *   1. search/firm/{crd}?json=true — the per-firm IAPD record. Its "iacontent"
+     *      field is a JSON *string* (not an object) holding, among other things,
+     *      brochures.brochuredetails[]: one entry per filed Part 2 document with a
+     *      brochureVersionID, brochureName and dateSubmitted.
+     *   2. files.adviserinfo.sec.gov/.../crd_iapd_Brochure.aspx?BRCHR_VRSN_ID={id}
+     *      — the document itself, extracted with the same OpenPDF path as Part 1.
+     *
+     * Why not reports.adviserinfo.sec.gov, which serves the Part 1 PDF: every
+     * brochure path under that host (…/ADV/{crd}/PDF/{versionId}.pdf and the
+     * Brochure/ and BRCHR/ variants) answers 403. files.* is what the IAPD site
+     * itself links brochures from, and it answers 200 with application/pdf.
+     *
+     * Part 2B supplements are skipped. A 2B documents an individual adviser's
+     * background and has no Item 8 at all, so handing one to the Item 8 extractor
+     * would produce a confident summary of the wrong document. When a firm has
+     * filed only 2Bs this returns blank text rather than the nearest thing.
+     *
+     * Returns an all-blank BrochureResult (never null) on any failure.
+     */
+    public BrochureResult fetchPart2Brochure(String crd0)
+    {
+        BrochureResult out0 = new BrochureResult();
+        if (isBlank(crd0)) return out0;
+
+        String clean0 = crd0.trim().replaceAll("[^0-9]", "");
+        if (clean0.isEmpty()) return out0;
+
+        try
+        {
+            String body0 = get(String.format(FIRM_JSON_URL0, clean0));
+            if (isBlank(body0)) return out0;
+
+            JSONObject content0 = firmContent(body0);
+            if (content0 == null) return out0;
+
+            JSONObject picked0 = pickPart2A(content0);
+            if (picked0 == null)
+            {
+                return out0;
+            }
+
+            String versionId0 = String.valueOf(picked0.opt("brochureVersionID")).trim();
+            if (isBlank(versionId0) || "null".equals(versionId0)) return out0;
+
+            String url0  = String.format(BROCHURE_URL0, versionId0);
+            String text0 = fetchPdfText(url0, "adv2a_" + clean0 + "_");
+            if (isBlank(text0)) return out0;
+
+            out0.text         = text0;
+            out0.versionId    = versionId0;
+            out0.url          = url0;
+            out0.brochureName = picked0.optString("brochureName", "");
+            out0.filingDate   = toIsoDate(picked0.optString("dateSubmitted", ""));
+            return out0;
+        }
+        catch (Exception e0)
+        {
+            System.err.println("[IAPD] fetchPart2Brochure CRD " + clean0 + ": " + e0.getMessage());
+            return out0;
+        }
+    }
+
+    /** Unwraps hits.hits[0]._source.iacontent, which is a JSON string, not an object. */
+    private static JSONObject firmContent(String body0)
+    {
+        try
+        {
+            JSONObject hits0 = new JSONObject(body0).optJSONObject("hits");
+            if (hits0 == null) return null;
+            JSONArray list0 = hits0.optJSONArray("hits");
+            if (list0 == null || list0.length() == 0) return null;
+            JSONObject src0 = list0.optJSONObject(0);
+            if (src0 == null) return null;
+            JSONObject inner0 = src0.optJSONObject("_source");
+            if (inner0 == null) return null;
+            String raw0 = inner0.optString("iacontent", "");
+            if (isBlank(raw0)) return null;
+            return new JSONObject(raw0);
+        }
+        catch (Exception e0) { return null; }
+    }
+
+    /**
+     * Picks the newest firm brochure (Part 2A) from brochures.brochuredetails[],
+     * skipping Part 2B supplements. Newest is by dateSubmitted; equal dates fall
+     * back to the higher version id, which is the later filing.
+     */
+    private static JSONObject pickPart2A(JSONObject content0)
+    {
+        JSONObject brochures0 = content0.optJSONObject("brochures");
+        if (brochures0 == null) return null;
+        JSONArray list0 = brochures0.optJSONArray("brochuredetails");
+        if (list0 == null || list0.length() == 0) return null;
+
+        JSONObject best0 = null;
+        String bestDate0 = "";
+        long bestVersion0 = -1L;
+
+        for (int i0 = 0; i0 < list0.length(); i0++)
+        {
+            JSONObject b0 = list0.optJSONObject(i0);
+            if (b0 == null) continue;
+            if (isPart2BName(b0.optString("brochureName", ""))) continue;
+
+            String date0 = toIsoDate(b0.optString("dateSubmitted", ""));
+            long ver0 = b0.optLong("brochureVersionID", -1L);
+
+            int cmp0 = date0.compareTo(bestDate0);
+            if (best0 == null || cmp0 > 0 || (cmp0 == 0 && ver0 > bestVersion0))
+            {
+                best0 = b0;
+                bestDate0 = date0;
+                bestVersion0 = ver0;
+            }
+        }
+        return best0;
+    }
+
+    // "NELSON ADV PART 2B" / "Brochure Supplement" — an individual's supplement,
+    // not the firm brochure. Matched loosely because filers name these freely.
+    private static boolean isPart2BName(String name0)
+    {
+        if (isBlank(name0)) return false;
+        String n0 = name0.toLowerCase().replaceAll("[^a-z0-9]", " ").replaceAll("\\s+", " ");
+        return n0.matches(".*\\b2\\s?b\\b.*") || n0.contains("supplement");
+    }
+
+    /** Downloads the filed ADV Part 1 PDF to a temp file and extracts its text. */
     private String fetchAdvPdfText(String crd0) throws Exception
     {
-        String url0 = ADV_PDF_URL0 + crd0 + "/PDF/" + crd0 + ".pdf";
-        java.nio.file.Path tmp0 = java.nio.file.Files.createTempFile("adv_" + crd0 + "_", ".pdf");
+        return fetchPdfText(ADV_PDF_URL0 + crd0 + "/PDF/" + crd0 + ".pdf", "adv_" + crd0 + "_");
+    }
+
+    /**
+     * Downloads a public SEC PDF to a temp file and returns its extracted text,
+     * always deleting the temp file. Shared by the Part 1 filing and the Part 2
+     * brochure so both go through one download/extract path.
+     */
+    private String fetchPdfText(String url0, String tmpPrefix0) throws Exception
+    {
+        java.nio.file.Path tmp0 = java.nio.file.Files.createTempFile(tmpPrefix0, ".pdf");
         try
         {
             HttpRequest req0 = HttpRequest.newBuilder()

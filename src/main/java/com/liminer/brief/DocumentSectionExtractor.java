@@ -23,6 +23,9 @@ public class DocumentSectionExtractor
     // Maximum characters returned for a section — keeps LLM prompts manageable.
     private static final int MAX_SECTION_CHARS = 40_000;
 
+    private static final Pattern ITEM_HEADING0 =
+        Pattern.compile("Item\\s+\\d+", Pattern.CASE_INSENSITIVE);
+
     /**
      * Extract the text of a named section from a regulatory document.
      *
@@ -44,8 +47,12 @@ public class DocumentSectionExtractor
         }
 
         // --- Strategy 1: ToC-guided page-boundary extraction ---
+        // Only trusted when the slice actually opens on the section it claims to be.
+        // Page markers are guesswork on a document whose page numbers do not appear
+        // in the text layer, and a slice that starts somewhere else is worse than no
+        // slice at all: the caller would label another section's text "Item 8".
         String tocResult = extractViaToc(fullText, sectionLabel);
-        if (!isBlank(tocResult))
+        if (!isBlank(tocResult) && opensWithLabel(tocResult, sectionLabel))
         {
             return truncate(tocResult, MAX_SECTION_CHARS);
         }
@@ -200,13 +207,7 @@ public class DocumentSectionExtractor
         int idx = lower.indexOf(target, searchFrom);
         while (idx >= 0)
         {
-            // Accept if at line start (or near it) — heading, not inline mention.
-            int lineStart = text.lastIndexOf('\n', idx);
-            String prefix = text.substring(Math.max(lineStart + 1, 0), idx).trim();
-            if (prefix.isEmpty() || prefix.matches("\\d+\\.?"))
-            {
-                return idx;
-            }
+            if (isHeadingAt(text, idx)) return idx;
             idx = lower.indexOf(target, idx + 1);
         }
         return -1;
@@ -214,12 +215,55 @@ public class DocumentSectionExtractor
 
     private static int findNextSameLevelHeading(String text, int searchFrom, String currentLabel)
     {
-        // "Item N" heading pattern — works for ADV Form items.
-        Pattern itemPat = Pattern.compile("(?m)^\\s*Item\\s+\\d+", Pattern.CASE_INSENSITIVE);
-        Matcher m = itemPat.matcher(text);
+        // "Item N" heading pattern — works for ADV Form items. Every candidate goes
+        // through the same heading test as the opening one, so the section does not
+        // end at a cross-reference ("see Item 9 below") or at a ToC line.
+        Matcher m = ITEM_HEADING0.matcher(text);
         if (searchFrom > 0) m.region(searchFrom, text.length());
-        if (m.find()) return m.start();
+        while (m.find())
+        {
+            if (isHeadingAt(text, m.start())) return m.start();
+        }
         return text.length();
+    }
+
+    /*
+     * Is the label at this offset a real heading, or just a mention of one?
+     *
+     * PDF text extraction frequently emits a whole brochure page — Table of Contents
+     * included — as ONE line, so "at the start of a line" identifies almost nothing.
+     * Two things reliably separate a heading from its impostors in that flat text:
+     *
+     *   ToC entry        preceded by dot leaders  "..................... 9  Item 8 – …"
+     *   cross-reference  preceded by prose        "(Please refer to Item 8 – …"
+     *   real heading     preceded by the end of   "…with Nelson Capital Advisors.  Item 8 – …"
+     *                    the previous sentence
+     *
+     * So: reject dot leaders, and otherwise require the text immediately before to be
+     * a line start or a finished sentence. Prose running straight into the label is a
+     * cross-reference and is skipped.
+     */
+    private static boolean isHeadingAt(String text, int idx)
+    {
+        int lineStart = text.lastIndexOf('\n', idx);
+        String prefix = text.substring(Math.max(lineStart + 1, 0), idx);
+
+        // A ToC entry: dot leaders and a page number just before the next label.
+        String tail = prefix.substring(Math.max(0, prefix.length() - 80));
+        if (tail.contains(".....")) return false;
+
+        String trimmed = prefix.trim();
+        if (trimmed.isEmpty() || trimmed.matches("\\d+\\.?")) return true;
+
+        char last = trimmed.charAt(trimmed.length() - 1);
+        return last == '.' || last == ':' || last == '?' || last == '!';
+    }
+
+    // True when the extracted slice actually begins with the section it claims.
+    private static boolean opensWithLabel(String slice, String sectionLabel)
+    {
+        int cap = Math.min(500, slice.length());
+        return slice.substring(0, cap).toLowerCase().contains(sectionLabel.toLowerCase());
     }
 
     // -----------------------------------------------------------------------
