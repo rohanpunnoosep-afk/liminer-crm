@@ -48,12 +48,21 @@ public final class BrightDataZoneHealth
     {
     }
 
-    /* Clear any recorded fault. Call at the start of every workflow run. */
+    /*
+     * Clear any recorded fault. Call at the start of every workflow run.
+     *
+     * Also clears SearchRouter's per-provider demotion streaks: both trackers
+     * exist to answer "is this provider still usable" and share the same
+     * per-run lifecycle, so a caller resetting one without the other would
+     * leave the router silently skipping a provider whose own health has
+     * already been cleared.
+     */
     public static void reset()
     {
         FAULT0.set(null);
         UNUSABLE_STREAK0.set(0);
         UNUSABLE_SAMPLE0.set(null);
+        SearchRouter.shared().reset();
     }
 
     /*

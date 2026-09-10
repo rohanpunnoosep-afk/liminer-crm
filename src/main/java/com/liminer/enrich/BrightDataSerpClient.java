@@ -34,6 +34,11 @@ public class BrightDataSerpClient
 
     public ArrayList<SerpResult> search(String query0, int maxResults0) throws Exception
     {
+        return SearchRouter.shared().search(query0, maxResults0);
+    }
+
+    ArrayList<SerpResult> searchBrightData0(String query0, int maxResults0) throws Exception
+    {
         if (isBlank(BRIGHT_DATA_API_TOKEN0))
         {
             throw new RuntimeException("Missing BRIGHT_DATA_API_TOKEN environment variable.");
@@ -250,24 +255,7 @@ public class BrightDataSerpClient
 
     private boolean isUsefulUrl(String url0)
     {
-        if (isBlank(url0))
-        {
-            return false;
-        }
-
-        String lower0 = url0.toLowerCase();
-
-        if (!lower0.startsWith("http"))
-        {
-            return false;
-        }
-
-        if (lower0.contains("google.com") || lower0.contains("gstatic.com"))
-        {
-            return false;
-        }
-
-        return true;
+        return SerpUrls.isUsefulUrl(url0);
     }
 
     public static String cleanGoogleRedirectUrl(String url0)
@@ -363,25 +351,7 @@ public class BrightDataSerpClient
      */
     public static boolean isAbsoluteHttpUrl(String url0)
     {
-        if (isBlank(url0))
-        {
-            return false;
-        }
-
-        String low0 = url0.trim().toLowerCase();
-        if (!low0.startsWith("http://") && !low0.startsWith("https://"))
-        {
-            return false;
-        }
-
-        try
-        {
-            return !isBlank(java.net.URI.create(url0.trim()).getHost());
-        }
-        catch (Exception ignored0)
-        {
-            return false;
-        }
+        return SerpUrls.isAbsoluteHttpUrl(url0);
     }
 
     private static String firstNonBlank(String a0, String b0, String c0)
