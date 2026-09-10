@@ -70,6 +70,20 @@ public class WebWorkflowTestMain
             }));
 
         fakeRegistry.add(new WorkflowRegistry.WorkflowInfo(
+            "streaming",
+            "Streaming Workflow",
+            "Prints, pauses, prints again.",
+            true,
+            null,
+            (context, params) ->
+            {
+                System.out.println("STREAM-LINE-1");
+                Thread.sleep(2500);
+                System.out.println("STREAM-LINE-2");
+                return "done-streaming";
+            }));
+
+        fakeRegistry.add(new WorkflowRegistry.WorkflowInfo(
             "throwing",
             "Throwing Workflow",
             "Always throws.",
@@ -125,6 +139,22 @@ public class WebWorkflowTestMain
             check("run accepted after slow job completes", afterSlowJobId != null && afterSlowJobId.length() > 0);
             pollUntilTerminal(afterSlowJobId, token);
 
+            // (c2) output of a still-running job is visible mid-run, not only at the end
+            String streamRunBody = postWithAuth("/api/workflows/streaming/run", "{}", token);
+            String streamJobId = new JSONObject(streamRunBody).optString("jobId", null);
+            check("run streaming workflow returns jobId", streamJobId != null && streamJobId.length() > 0);
+
+            JSONObject midRun = pollUntilOutputContains(streamJobId, token, "STREAM-LINE-1", 2000);
+            check("first line visible while job still RUNNING", "RUNNING".equals(midRun.optString("status")));
+            check("second line not printed yet", !midRun.optString("output").contains("STREAM-LINE-2"));
+
+            JSONObject streamJob = pollUntilTerminal(streamJobId, token);
+            check("streaming job DONE", "DONE".equals(streamJob.optString("status")));
+            check("streaming job keeps both lines and the result",
+                streamJob.optString("output").contains("STREAM-LINE-1")
+                    && streamJob.optString("output").contains("STREAM-LINE-2")
+                    && streamJob.optString("output").contains("done-streaming"));
+
             // (d) throwing handler -> job FAILED with exception message
             String throwRunBody = postWithAuth("/api/workflows/throwing/run", "{}", token);
             String throwJobId = new JSONObject(throwRunBody).optString("jobId", null);
@@ -152,6 +182,30 @@ public class WebWorkflowTestMain
         {
             server.stop();
         }
+    }
+
+    /**
+     * Polls a job until its output contains the given text, failing if that takes longer
+     * than timeoutMs. Used to prove progress reaches the API before the job finishes.
+     */
+    private static JSONObject pollUntilOutputContains(
+        String jobId, String token, String text, long timeoutMs) throws Exception
+    {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+
+        while (System.currentTimeMillis() < deadline)
+        {
+            JSONObject job = new JSONObject(getWithAuth("/api/jobs/" + jobId, token));
+
+            if (job.optString("output").contains(text))
+            {
+                return job;
+            }
+
+            Thread.sleep(100);
+        }
+
+        throw new Exception("job " + jobId + " never published \"" + text + "\" within " + timeoutMs + "ms");
     }
 
     private static JSONObject pollUntilTerminal(String jobId, String token) throws Exception

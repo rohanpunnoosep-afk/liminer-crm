@@ -66,6 +66,10 @@ public class WebServer
 
     public static final int DEFAULT_PORT = 7070;
     private static final int MAX_JOB_OUTPUT_CHARS = 200_000;
+    // How often a running workflow's captured stdout is republished onto the job.
+    // The browser polls every 2s, so this keeps the visible output within a few
+    // seconds of the run without re-copying the buffer on every printed line.
+    private static final long LIVE_OUTPUT_PUSH_MS = 750;
     private static final int MAX_COLUMNS = 200;
     private static final int MAX_CRM_ROWS = 500;
 
@@ -883,7 +887,7 @@ public class WebServer
         CostMeter.bind(meter);
 
         PrintStream originalOut = System.out;
-        ByteArrayOutputStream capture = new ByteArrayOutputStream();
+        LiveCapture capture = new LiveCapture(job);
 
         // Per-run latch: enrichment swallows individual SERP failures on purpose, so a
         // dead Bright Data zone would otherwise surface as a clean "Done" with nothing
@@ -1003,6 +1007,37 @@ public class WebServer
         }
 
         return lastNonBlank;
+    }
+
+    /**
+     * Captures a running workflow's stdout and republishes it onto the job as it
+     * arrives, so /api/jobs/{id} reports progress mid-run instead of only once the
+     * whole workflow has returned. System.out is wrapped in an autoflushing
+     * PrintStream, so every completed line reaches flush() here.
+     */
+    private static class LiveCapture extends ByteArrayOutputStream
+    {
+        private final Job job;
+        private long lastPushMs = 0L;
+
+        LiveCapture(Job job)
+        {
+            this.job = job;
+        }
+
+        @Override
+        public synchronized void flush()
+        {
+            long now = System.currentTimeMillis();
+
+            if (now - lastPushMs < LIVE_OUTPUT_PUSH_MS)
+            {
+                return;
+            }
+
+            lastPushMs = now;
+            job.output = truncateOutput(toString());
+        }
     }
 
     private static String truncateOutput(String output)
