@@ -280,17 +280,26 @@ public class BrightDataSerpClient
         String value0 = url0.trim();
 
         // Google wraps results in several redirect shapes. /url?q= and /url?url= carry
-        // the destination percent-encoded and are recoverable. /goto?url= carries an
-        // opaque encrypted blob (protobuf, no plaintext URL inside) and is NOT -- it is
-        // left as-is here and rejected by isAbsoluteHttpUrl below, because handing that
-        // relative path to Bright Data just earns an HTTP 400 "url must be a valid uri".
+        // the destination percent-encoded and are directly recoverable. /goto?url=
+        // carries an opaque encrypted blob (protobuf, no plaintext URL inside), so it
+        // cannot be decoded -- but it CAN be resolved with a direct HTTP GET that reads
+        // the 302 Location header (see GotoResolver). Never route that GET through
+        // Bright Data: it refuses the /goto path outright.
         if (value0.startsWith("/url?") || value0.startsWith("/goto?")
-            || value0.startsWith("https://www.google.com/url?"))
+            || value0.startsWith("https://www.google.com/url?")
+            || value0.startsWith("https://www.google.com/goto?")
+            || value0.startsWith("https://google.com/goto?"))
         {
             String extracted0 = extractRedirectTarget0(value0);
             if (!isBlank(extracted0))
             {
                 return extracted0;
+            }
+
+            String resolved0 = GotoResolver.resolve(value0);
+            if (!isBlank(resolved0))
+            {
+                return resolved0;
             }
         }
 
