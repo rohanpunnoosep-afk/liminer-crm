@@ -58,10 +58,25 @@ public class WebsiteCrawlerService {
         System.out.println(outputJson);
     }
 
+    private static String scrapeRootWithOneRetry(String rootUrl) throws Exception {
+        try {
+            return scrapeUrl(rootUrl);
+        } catch (java.io.InterruptedIOException timeout0) {
+            System.out.println("Root page timed out, retrying once: " + rootUrl);
+            Thread.sleep(1000);
+            return scrapeUrl(rootUrl);
+        }
+    }
+
     public static LinkedHashMap<String, String> crawlWebsite(String rootUrl) throws Exception {
         LinkedHashMap<String, String> scrapedPages = new LinkedHashMap<>();
 
-        String homeHtml = scrapeUrl(rootUrl);
+        // Every sub-page failure below is tolerated, but the root page is the one
+        // that yields the link list, so losing it loses the whole row. A single
+        // unlocker timeout on a slow host is transient (mesalanecap.com answers in
+        // ~20s unloaded, longer when several rows crawl at once), so give it one
+        // more try before giving the row up.
+        String homeHtml = scrapeRootWithOneRetry(rootUrl);
         scrapedPages.put(rootUrl, homeHtml);
 
         List<String> allLinks = extractLinks(homeHtml, rootUrl);

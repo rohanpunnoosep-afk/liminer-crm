@@ -20,7 +20,8 @@ public class SearchRouterTestMain
             testThrowingFirstProviderFallsThrough();
             testUnavailableProviderIsSkipped();
             testAllEmptyReturnsEmpty();
-            testThreeConsecutiveEmptiesDemote();
+            testEmptiesNeverDemote();
+            testThreeConsecutiveFailuresDemote();
             testNonEmptyResultResetsStreak();
             testResetReenablesDemotedProvider();
             testSerpUrlsRejectsGoogleGoto();
@@ -105,9 +106,31 @@ public class SearchRouterTestMain
         check("all providers empty yields an empty list, not an exception", results0.isEmpty());
     }
 
-    private static void testThreeConsecutiveEmptiesDemote() throws Exception
+    /*
+     * The enrichment pipeline fires long strings of narrow site: queries that
+     * legitimately match nothing. Demoting on empties took the whole provider chain
+     * out partway through a background check, after which every later query silently
+     * ran no search at all -- so an empty answer must never count against a provider.
+     */
+    private static void testEmptiesNeverDemote() throws Exception
     {
         FakeProvider first0 = FakeProvider.returning("first", results());
+        FakeProvider second0 = FakeProvider.returning("second", results("https://b.example.com"));
+
+        SearchRouter router0 = new SearchRouter(Arrays.asList(first0, second0));
+
+        for (int i = 0; i < 6; i++)
+        {
+            router0.search("q" + i, 10);
+        }
+
+        check("a provider answering empty six times in a row is still called",
+            first0.callCount0 == 6);
+    }
+
+    private static void testThreeConsecutiveFailuresDemote() throws Exception
+    {
+        FakeProvider first0 = FakeProvider.throwing("first");
         FakeProvider second0 = FakeProvider.returning("second", results("https://b.example.com"));
 
         SearchRouter router0 = new SearchRouter(Arrays.asList(first0, second0));
@@ -115,38 +138,41 @@ public class SearchRouterTestMain
         router0.search("q1", 10);
         router0.search("q2", 10);
         router0.search("q3", 10);
-        check("first provider was called for the first three queries", first0.callCount0 == 3);
+        check("throwing provider was called for the first three queries", first0.callCount0 == 3);
 
         router0.search("q4", 10);
-        check("first provider is demoted and not invoked on the 4th call", first0.callCount0 == 3);
+        check("throwing provider is demoted and not invoked on the 4th call",
+            first0.callCount0 == 3);
     }
 
     private static void testNonEmptyResultResetsStreak() throws Exception
     {
         FakeProvider first0 = new FakeProvider("first");
-        first0.queue0.add(results());
-        first0.queue0.add(results());
-        first0.queue0.add(results("https://a.example.com"));
-        first0.queue0.add(results());
-        first0.queue0.add(results());
+        first0.failQueue0.add(Boolean.TRUE);
+        first0.failQueue0.add(Boolean.TRUE);
+        first0.failQueue0.add(Boolean.FALSE);
+        first0.failQueue0.add(Boolean.TRUE);
+        first0.failQueue0.add(Boolean.TRUE);
+        first0.staticResult0 = results("https://a.example.com");
 
         FakeProvider second0 = FakeProvider.returning("second", results("https://b.example.com"));
 
         SearchRouter router0 = new SearchRouter(Arrays.asList(first0, second0));
 
-        router0.search("q1", 10); // empty (streak 1)
-        router0.search("q2", 10); // empty (streak 2)
+        router0.search("q1", 10); // throws (streak 1)
+        router0.search("q2", 10); // throws (streak 2)
         router0.search("q3", 10); // usable, resets streak
-        router0.search("q4", 10); // empty (streak 1)
-        router0.search("q5", 10); // empty (streak 2)
+        router0.search("q4", 10); // throws (streak 1)
+        router0.search("q5", 10); // throws (streak 2)
+        router0.search("q6", 10); // usable again -- only reached if never demoted
 
-        check("a usable result before the 3rd empty resets the streak, provider still called",
-            first0.callCount0 == 5);
+        check("a usable result before the 3rd failure resets the streak, provider still called",
+            first0.callCount0 == 6);
     }
 
     private static void testResetReenablesDemotedProvider() throws Exception
     {
-        FakeProvider first0 = FakeProvider.returning("first", results());
+        FakeProvider first0 = FakeProvider.throwing("first");
         FakeProvider second0 = FakeProvider.returning("second", results("https://b.example.com"));
 
         SearchRouter router0 = new SearchRouter(Arrays.asList(first0, second0));
@@ -154,7 +180,7 @@ public class SearchRouterTestMain
         router0.search("q1", 10);
         router0.search("q2", 10);
         router0.search("q3", 10);
-        check("provider demoted after 3 empties", first0.callCount0 == 3);
+        check("provider demoted after 3 failures", first0.callCount0 == 3);
 
         router0.search("q4", 10);
         check("demoted provider not called before reset", first0.callCount0 == 3);
@@ -214,6 +240,8 @@ public class SearchRouterTestMain
         boolean throwOnSearch0 = false;
         int callCount0 = 0;
         final ArrayList<ArrayList<SerpResult>> queue0 = new ArrayList<ArrayList<SerpResult>>();
+        /* Per-call script of "does this call throw", consumed in order. */
+        final ArrayList<Boolean> failQueue0 = new ArrayList<Boolean>();
 
         FakeProvider(String name1)
         {
@@ -234,7 +262,7 @@ public class SearchRouterTestMain
             return provider0;
         }
 
-        private ArrayList<SerpResult> staticResult0 = null;
+        ArrayList<SerpResult> staticResult0 = null;
 
         @Override
         public String name()
@@ -252,6 +280,11 @@ public class SearchRouterTestMain
         public ArrayList<SerpResult> search(String query0, int maxResults0) throws Exception
         {
             callCount0++;
+
+            if (!failQueue0.isEmpty() && failQueue0.remove(0).booleanValue())
+            {
+                throw new RuntimeException("scripted failure for " + name0);
+            }
 
             if (throwOnSearch0)
             {

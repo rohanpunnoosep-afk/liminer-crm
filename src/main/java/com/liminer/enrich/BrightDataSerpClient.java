@@ -131,6 +131,7 @@ public class BrightDataSerpClient
         // two apart -- by the time an empty list reaches the caller they look alike.
         int seen0 = 0;
         String firstDropped0 = null;
+        boolean droppedGoogleStub0 = false;
 
         try
         {
@@ -187,6 +188,10 @@ public class BrightDataSerpClient
                     {
                         firstDropped0 = cleaned0;
                     }
+                    if (isGoogleRedirectStub0(cleaned0))
+                    {
+                        droppedGoogleStub0 = true;
+                    }
                     continue;
                 }
 
@@ -204,11 +209,22 @@ public class BrightDataSerpClient
         }
 
         // A query that genuinely matched nothing has seen0 == 0 and is not a fault.
+        //
+        // Dropping everything only means the zone's parser is broken when what came
+        // back were Google redirect stubs -- an unresolved /goto or /url wrapper, or a
+        // bare google.com link. Other junk (a description string in the url field, an
+        // off-domain link the caller cannot use) is one odd result, not a dead zone,
+        // and counting it toward the streak reported a healthy zone as broken and
+        // aborted the run.
         if (seen0 > 0 && results0.isEmpty())
         {
             System.out.println("SERP: discarded all " + seen0
                 + " result(s) as unusable (e.g. " + firstDropped0 + ")");
-            BrightDataZoneHealth.noteResultsUnusable(BRIGHT_DATA_SERP_ZONE0, firstDropped0);
+
+            if (droppedGoogleStub0)
+            {
+                BrightDataZoneHealth.noteResultsUnusable(BRIGHT_DATA_SERP_ZONE0, firstDropped0);
+            }
         }
         else if (!results0.isEmpty())
         {
@@ -251,6 +267,29 @@ public class BrightDataSerpClient
         }
 
         return results0;
+    }
+
+    /*
+     * True for the shapes that mean "Bright Data handed back Google's own redirect
+     * wrapper instead of a destination": a relative or absolute /goto or /url stub,
+     * or any other google.com link. These are the parser-fault signature that
+     * BrightDataZoneHealth's unusable streak exists to catch.
+     */
+    private static boolean isGoogleRedirectStub0(String url0)
+    {
+        if (isBlank(url0))
+        {
+            return false;
+        }
+
+        String low0 = url0.trim().toLowerCase();
+
+        return low0.startsWith("/goto?")
+            || low0.startsWith("/url?")
+            || low0.startsWith("https://www.google.com/")
+            || low0.startsWith("https://google.com/")
+            || low0.startsWith("http://www.google.com/")
+            || low0.startsWith("http://google.com/");
     }
 
     private boolean isUsefulUrl(String url0)

@@ -36,6 +36,12 @@ public class SerpUnusableUrlTestMain
     public static void main(String[] args0)
     {
         Call.Factory realFactory0 = BrightDataHttp.callFactory;
+        Call.Factory realGotoFactory0 = GotoResolver.callFactory;
+
+        // The canned blobs are not real Google stubs, so let no resolution attempt
+        // leave the machine: a 404 with no Location leaves the stub unresolved, which
+        // is exactly the state these cases are about.
+        GotoResolver.callFactory = fakeFactory(404, null, "");
 
         try
         {
@@ -45,6 +51,7 @@ public class SerpUnusableUrlTestMain
             testNoResultsIsNotAFault();
             testStreakLatchesFault();
             testUsableResultBreaksStreak();
+            testNonGoogleJunkNeverLatchesAFault();
             testFaultSummaryNamesTheParsingProblem();
             testBrightDataCallsAreMetered();
             testZoneErrorResponseIsStillMetered();
@@ -59,6 +66,7 @@ public class SerpUnusableUrlTestMain
         finally
         {
             BrightDataHttp.callFactory = realFactory0;
+            GotoResolver.callFactory = realGotoFactory0;
             BrightDataZoneHealth.reset();
             CostMeter.unbind();
         }
@@ -160,6 +168,28 @@ public class SerpUnusableUrlTestMain
         searchWithOrganic(organic(GOTO_ABSOLUTE0, GOTO_ABSOLUTE0));
 
         check("a usable result resets the streak so an isolated bad query is tolerated",
+            BrightDataZoneHealth.isHealthy());
+    }
+
+    /*
+     * Dropping every result only indicts the zone's parser when what came back were
+     * Google's own redirect wrappers. Bright Data occasionally returns some other junk
+     * in the url field -- here, a description string that begins with a real host --
+     * and treating that as a parser fault aborted a run whose zone was fine.
+     */
+    private static void testNonGoogleJunkNeverLatchesAFault() throws Exception
+    {
+        BrightDataZoneHealth.reset();
+
+        String junk0 = "http://www.globalpartnerships.org. External link for Global "
+            + "Partnerships. Industry: Investment Management.";
+
+        for (int i = 0; i < 5; i++)
+        {
+            searchWithOrganic(organic(junk0, junk0));
+        }
+
+        check("all-unusable results that are not Google stubs never latch a fault",
             BrightDataZoneHealth.isHealthy());
     }
 

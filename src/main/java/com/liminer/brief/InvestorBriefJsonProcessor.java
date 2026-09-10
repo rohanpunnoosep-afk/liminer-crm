@@ -414,10 +414,15 @@ public class InvestorBriefJsonProcessor
         LinkedHashMap<Integer, Integer> rows = new LinkedHashMap<>();
         int maxRows = fundNameCol == null ? 0 : fundNameCol.length;
         int selected = 0;
+        int lastPopulated = lastPopulatedIndex(fundNameCol, lastBriefCol);
         for (int i = 0; i < maxRows && selected < maxRowsCap; i++)
         {
             String fundName = cell(fundNameCol, i);
-            if (isBlank(fundName)) continue;
+            if (isBlank(fundName))
+            {
+                noteSkippedNoFundName(dataStartRow + i, i, lastPopulated);
+                continue;
+            }
             // A blank Last Brief Generated date means this row has not been briefed yet.
             String lastBrief = cell(lastBriefCol, i);
             if (isBlank(lastBrief))
@@ -529,4 +534,48 @@ public class InvestorBriefJsonProcessor
     private static String safe(String s) { return s == null ? "" : s; }
 
     private static boolean isBlank(String s) { return s == null || s.trim().isEmpty(); }
+
+    /*
+     * Fund Name is this workflow's join key, so a row without one is passed over. It
+     * used to happen silently, which read downstream as "that row had nothing to do"
+     * -- an intake-created row whose fund could not be named simply vanished from the
+     * run's counts. Name it in the output instead so the operator can fill the cell.
+     *
+     * Only rows inside the populated block are reported: the column arrays run to the
+     * sheet's full height, and announcing every blank row past the data would bury the
+     * one line that matters under hundreds of empty ones.
+     */
+    private static void noteSkippedNoFundName(int sheetRow0, int rowIndex0, int lastPopulatedIndex0)
+    {
+        if (rowIndex0 > lastPopulatedIndex0)
+        {
+            return;
+        }
+
+        System.out.println("  Skipping row " + sheetRow0 + ": no Fund Name (this workflow keys on it).");
+    }
+
+    /* Index of the last row with a value in any of the given columns, or -1 if none. */
+    private static int lastPopulatedIndex(String[][]... columns0)
+    {
+        int last0 = -1;
+
+        for (String[][] column0 : columns0)
+        {
+            if (column0 == null)
+            {
+                continue;
+            }
+
+            for (int i = 0; i < column0.length; i++)
+            {
+                if (!isBlank(cell(column0, i)))
+                {
+                    last0 = Math.max(last0, i);
+                }
+            }
+        }
+
+        return last0;
+    }
 }

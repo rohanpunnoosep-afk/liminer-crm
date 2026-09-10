@@ -12,10 +12,18 @@ import java.util.concurrent.atomic.AtomicInteger;
  * every existing search() call site gets multi-provider failover without
  * being edited -- BrightDataSerpClient.search() simply delegates here.
  *
- * A provider counts as "down" for a query when it returns an empty list or
- * throws; a non-empty result resets its streak. After DEMOTE_STREAK_LIMIT0
- * consecutive down responses a provider is demoted (skipped) for the rest of
- * the run, mirroring BrightDataZoneHealth's threshold of 3.
+ * Only a THROWN failure counts against a provider: after DEMOTE_STREAK_LIMIT0
+ * consecutive throws it is demoted (skipped) for the rest of the run, and any
+ * successful call clears the streak.
+ *
+ * An empty result deliberately does NOT count. The enrichment pipeline fires
+ * long strings of narrow site: queries ("site:linkedin.com/in \"Goel\"
+ * \"Scotiabank\""), and a run of those legitimately matching nothing is the
+ * normal case, not a sick provider. Counting empties demoted every provider
+ * partway through a background check, after which the rest of the run made no
+ * searches at all and reported "no candidates found" as if it had looked.
+ * "Provider is answering but its links are junk" is a different condition and
+ * belongs to BrightDataZoneHealth, which inspects the links themselves.
  */
 public class SearchRouter implements SearchProvider
 {
@@ -86,6 +94,7 @@ public class SearchRouter implements SearchProvider
                 }
 
                 noteEmpty0(provider0);
+                resetStreak0(provider0);
             }
             catch (Exception exception0)
             {
@@ -108,10 +117,13 @@ public class SearchRouter implements SearchProvider
         streaks0.remove(provider0);
     }
 
+    /*
+     * An empty answer is a search miss, not a fault: log it so the fallback chain is
+     * visible in the run output, but leave the provider's failure streak alone.
+     */
     private void noteEmpty0(SearchProvider provider0)
     {
         System.out.println("SearchRouter: " + provider0.name() + " returned no usable results");
-        bumpStreak0(provider0);
     }
 
     private void noteFailure0(SearchProvider provider0, Exception exception0)
