@@ -1,5 +1,5 @@
 const SESSION_KEY = "liminer.token";
-const POLL_INTERVAL_MS = 2000;
+const POLL_INTERVAL_MS = 1000;
 const MAX_HISTORY = 5;
 
 const $ = (id) => document.getElementById(id);

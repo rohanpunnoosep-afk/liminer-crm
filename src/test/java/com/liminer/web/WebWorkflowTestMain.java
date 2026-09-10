@@ -23,6 +23,11 @@ public class WebWorkflowTestMain
     private static final int TEST_PORT = 7998;
     private static final String BASE_URL = "http://127.0.0.1:" + TEST_PORT;
 
+    // Set by the latency workflow when it prints, and by the poller when it first sees
+    // that line over HTTP. The gap is the latency the browser would experience.
+    private static volatile long markPrintedAtMs = 0L;
+    private static volatile long markSeenAtMs = 0L;
+
     public static void main(String[] args) throws Exception
     {
         WebServer.LoginPort fakeLogin = email ->
@@ -81,6 +86,25 @@ public class WebWorkflowTestMain
                 Thread.sleep(2500);
                 System.out.println("STREAM-LINE-2");
                 return "done-streaming";
+            }));
+
+        fakeRegistry.add(new WorkflowRegistry.WorkflowInfo(
+            "latency",
+            "Latency Workflow",
+            "Prints a marker and records exactly when, then keeps running.",
+            true,
+            null,
+            (context, params) ->
+            {
+                Thread.sleep(500);
+                // Print first so the throttle window is freshly used: the marker then has
+                // to wait out the full LIVE_OUTPUT_PUSH_MS, which is the worst case a
+                // running workflow can produce rather than a lucky one.
+                System.out.println("PRIMING-LINE");
+                markPrintedAtMs = System.currentTimeMillis();
+                System.out.println("LATENCY-MARK");
+                Thread.sleep(4000);
+                return "done-latency";
             }));
 
         fakeRegistry.add(new WorkflowRegistry.WorkflowInfo(
@@ -144,7 +168,7 @@ public class WebWorkflowTestMain
             String streamJobId = new JSONObject(streamRunBody).optString("jobId", null);
             check("run streaming workflow returns jobId", streamJobId != null && streamJobId.length() > 0);
 
-            JSONObject midRun = pollUntilOutputContains(streamJobId, token, "STREAM-LINE-1", 2000);
+            JSONObject midRun = pollUntilOutputContains(streamJobId, token, "STREAM-LINE-1", 2000, 25);
             check("first line visible while job still RUNNING", "RUNNING".equals(midRun.optString("status")));
             check("second line not printed yet", !midRun.optString("output").contains("STREAM-LINE-2"));
 
@@ -154,6 +178,22 @@ public class WebWorkflowTestMain
                 streamJob.optString("output").contains("STREAM-LINE-1")
                     && streamJob.optString("output").contains("STREAM-LINE-2")
                     && streamJob.optString("output").contains("done-streaming"));
+
+            // (c3) measure how long a printed line takes to become visible over HTTP
+            String latRunBody = postWithAuth("/api/workflows/latency/run", "{}", token);
+            String latJobId = new JSONObject(latRunBody).optString("jobId", null);
+
+            // Polls at POLL_INTERVAL_MS, the browser's real cadence, so the number below
+            // is what a user actually waits -- server delay plus poll wait.
+            pollUntilOutputContains(latJobId, token, "LATENCY-MARK", 6000, 1000);
+
+            long latencyMs = markSeenAtMs - markPrintedAtMs;
+            System.err.println("MEASURED end-to-end output latency: " + latencyMs + "ms");
+            check("printed line visible at browser poll cadence within 2000ms (was "
+                    + latencyMs + "ms)",
+                latencyMs < 2000);
+
+            pollUntilTerminal(latJobId, token);
 
             // (d) throwing handler -> job FAILED with exception message
             String throwRunBody = postWithAuth("/api/workflows/throwing/run", "{}", token);
@@ -189,7 +229,7 @@ public class WebWorkflowTestMain
      * than timeoutMs. Used to prove progress reaches the API before the job finishes.
      */
     private static JSONObject pollUntilOutputContains(
-        String jobId, String token, String text, long timeoutMs) throws Exception
+        String jobId, String token, String text, long timeoutMs, long pollMs) throws Exception
     {
         long deadline = System.currentTimeMillis() + timeoutMs;
 
@@ -199,10 +239,11 @@ public class WebWorkflowTestMain
 
             if (job.optString("output").contains(text))
             {
+                markSeenAtMs = System.currentTimeMillis();
                 return job;
             }
 
-            Thread.sleep(100);
+            Thread.sleep(pollMs);
         }
 
         throw new Exception("job " + jobId + " never published \"" + text + "\" within " + timeoutMs + "ms");

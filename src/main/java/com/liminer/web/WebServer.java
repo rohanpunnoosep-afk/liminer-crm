@@ -66,10 +66,6 @@ public class WebServer
 
     public static final int DEFAULT_PORT = 7070;
     private static final int MAX_JOB_OUTPUT_CHARS = 200_000;
-    // How often a running workflow's captured stdout is republished onto the job.
-    // The browser polls every 2s, so this keeps the visible output within a few
-    // seconds of the run without re-copying the buffer on every printed line.
-    private static final long LIVE_OUTPUT_PUSH_MS = 750;
     private static final int MAX_COLUMNS = 200;
     private static final int MAX_CRM_ROWS = 500;
 
@@ -83,6 +79,9 @@ public class WebServer
         volatile String finishedAt;
         volatile String output = "";
         volatile String summary = "";
+        // The running workflow's stdout buffer, read by GET /api/jobs/{id} while the job
+        // is in flight. Null once the job has published its final output.
+        volatile LiveCapture capture;
         volatile JSONObject cost = null;
     }
 
@@ -667,7 +666,8 @@ public class WebServer
             json.put("summary", job.summary);
             json.put("startedAt", job.startedAt);
             json.put("finishedAt", job.finishedAt);
-            json.put("output", job.output);
+            LiveCapture running = job.capture;
+            json.put("output", running == null ? job.output : truncateOutput(running.snapshot()));
             json.put("cost", job.cost == null ? JSONObject.NULL : job.cost);
 
             writeJson(ctx, json);
@@ -887,7 +887,8 @@ public class WebServer
         CostMeter.bind(meter);
 
         PrintStream originalOut = System.out;
-        LiveCapture capture = new LiveCapture(job);
+        LiveCapture capture = new LiveCapture();
+        job.capture = capture;
 
         // Per-run latch: enrichment swallows individual SERP failures on purpose, so a
         // dead Bright Data zone would otherwise surface as a clean "Done" with nothing
@@ -908,16 +909,12 @@ public class WebServer
             if (zoneFault != null)
             {
                 String combined = captured.isEmpty() ? zoneFault : captured + "\n" + zoneFault;
-                job.output = truncateOutput(combined);
-                job.status = "FAILED";
-                job.summary = zoneFault;
+                publishFinal(job, combined, "FAILED", zoneFault);
             }
             else
             {
                 String combined = captured.isEmpty() ? result : captured + "\n" + result;
-                job.output = truncateOutput(combined);
-                job.status = classifyResult(result);
-                job.summary = summarize(result);
+                publishFinal(job, combined, classifyResult(result), summarize(result));
             }
         }
         catch (CostCeilingExceededException e)
@@ -927,9 +924,7 @@ public class WebServer
             String captured = capture.toString();
             String combined = captured.isEmpty() ? e.getMessage() : captured + "\n" + e.getMessage();
 
-            job.output = truncateOutput(combined);
-            job.status = "FAILED";
-            job.summary = e.getMessage();
+            publishFinal(job, combined, "FAILED", e.getMessage());
         }
         catch (Exception e)
         {
@@ -939,9 +934,7 @@ public class WebServer
             String message = e.getMessage() == null ? e.toString() : e.getMessage();
             String combined = captured.isEmpty() ? message : captured + "\n" + message;
 
-            job.output = truncateOutput(combined);
-            job.status = "FAILED";
-            job.summary = summarize(message);
+            publishFinal(job, combined, "FAILED", summarize(message));
         }
         finally
         {
@@ -950,6 +943,20 @@ public class WebServer
             job.cost = meter.toJson();
             CostMeter.unbind();
         }
+    }
+
+    /**
+     * Publishes a finished job's output, then its terminal status. Order matters: the
+     * live buffer is detached before the status goes terminal, so a poll that sees DONE
+     * can never be served a snapshot taken before the handler's return value was
+     * appended -- the client stops polling on that status.
+     */
+    private static void publishFinal(Job job, String output, String status, String summary)
+    {
+        job.output = truncateOutput(output);
+        job.capture = null;
+        job.summary = summary;
+        job.status = status;
     }
 
     private static String classifyResult(String result)
@@ -1010,33 +1017,20 @@ public class WebServer
     }
 
     /**
-     * Captures a running workflow's stdout and republishes it onto the job as it
-     * arrives, so /api/jobs/{id} reports progress mid-run instead of only once the
-     * whole workflow has returned. System.out is wrapped in an autoflushing
-     * PrintStream, so every completed line reaches flush() here.
+     * Captures a running workflow's stdout so GET /api/jobs/{id} can report progress
+     * mid-run instead of only once the whole workflow has returned.
+     *
+     * The reader takes the snapshot; the writing thread only appends. An earlier version
+     * had the writer push to the job on flush() and throttled those pushes, which quietly
+     * dropped the last line before a long silence -- exactly the "Sending data to OpenAI
+     * in batches..." line a user most wants to see -- until something else printed.
+     * Snapshotting on read costs one buffer copy per poll and cannot drop anything.
      */
     private static class LiveCapture extends ByteArrayOutputStream
     {
-        private final Job job;
-        private long lastPushMs = 0L;
-
-        LiveCapture(Job job)
+        synchronized String snapshot()
         {
-            this.job = job;
-        }
-
-        @Override
-        public synchronized void flush()
-        {
-            long now = System.currentTimeMillis();
-
-            if (now - lastPushMs < LIVE_OUTPUT_PUSH_MS)
-            {
-                return;
-            }
-
-            lastPushMs = now;
-            job.output = truncateOutput(toString());
+            return toString();
         }
     }
 
