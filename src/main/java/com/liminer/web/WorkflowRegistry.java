@@ -94,13 +94,24 @@ public class WorkflowRegistry
         public final String label;
         public final String type;
         public final boolean required;
+        // Pre-filled in the run form so the workflow's own default is visible rather than
+        // implied by an empty box. Null leaves the field blank. The value still travels as
+        // an ordinary submitted param, and clearing the box falls back to the handler's
+        // paramInt/paramBool default, so this is a display concern only.
+        public final String defaultValue;
 
         public InputField(String key, String label, String type, boolean required)
+        {
+            this(key, label, type, required, null);
+        }
+
+        public InputField(String key, String label, String type, boolean required, String defaultValue)
         {
             this.key = key;
             this.label = label;
             this.type = type;
             this.required = required;
+            this.defaultValue = defaultValue;
         }
 
         public JSONObject toJson()
@@ -110,6 +121,10 @@ public class WorkflowRegistry
             json.put("label", label);
             json.put("type", type);
             json.put("required", required);
+            if (defaultValue != null)
+            {
+                json.put("defaultValue", defaultValue);
+            }
             return json;
         }
     }
@@ -382,6 +397,8 @@ public class WorkflowRegistry
                     scrapeWebsites,
                     extractProfiles);
             })
+            .withInputs(
+                new InputField("maxCandidates", "How many candidates to discover", "number", false, "20"))
             .inProcess("discover", 0));
 
         registry.add(new WorkflowInfo(

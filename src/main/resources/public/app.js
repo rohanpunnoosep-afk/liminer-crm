@@ -370,6 +370,13 @@ function renderWorkflowInputPanel(wf) {
     const input = document.createElement("input");
     input.id = "wfInput_" + field.key;
     input.type = field.type === "checkbox" ? "checkbox" : field.type || "text";
+    if (field.defaultValue !== undefined && field.defaultValue !== null) {
+      if (field.type === "checkbox") {
+        input.checked = field.defaultValue === true || field.defaultValue === "true";
+      } else {
+        input.value = field.defaultValue;
+      }
+    }
     input.addEventListener("input", updateWorkflowInputConfirmState);
 
     wrapper.appendChild(label);

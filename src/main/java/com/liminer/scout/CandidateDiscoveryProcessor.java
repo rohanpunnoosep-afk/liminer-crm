@@ -33,6 +33,41 @@ public class CandidateDiscoveryProcessor
     private static final int MAX_COLUMNS0 = 200;
     private static final int MAX_CRM_ROWS0 = 2000;
 
+    // Candidates are appended to the CRM in small batches as they are built, rather than
+    // in one write at the very end. Building a candidate costs a LinkedIn scrape and an
+    // OpenAI extraction, so a run of twenty can take fifteen minutes; batching by two
+    // means the first rows land in about a minute and the GP can start reading them while
+    // the rest of the run continues.
+    private static final int DEFAULT_WRITE_EVERY_CANDIDATES0 = 2;
+
+    /**
+     * Receives each batch of freshly built candidates so they can be written out while
+     * discovery is still running.
+     */
+    public interface CandidateBatchSink
+    {
+        void accept(ArrayList<CandidateInvestor> batch0) throws Exception;
+    }
+
+    /**
+     * Counts from one CRM append, so repeated batch appends can be summed into a single
+     * closing summary instead of each returning its own sentence.
+     */
+    private static class AppendOutcome
+    {
+        int added0 = 0;
+        int skippedNotReady0 = 0;
+        int skippedDuplicates0 = 0;
+        String error0 = null;
+
+        void add(AppendOutcome other0)
+        {
+            added0 += other0.added0;
+            skippedNotReady0 += other0.skippedNotReady0;
+            skippedDuplicates0 += other0.skippedDuplicates0;
+        }
+    }
+
     private SearchTermGenerator searchTermGenerator;
     private BrightDataSerpClient serpClient;
     private LinkedInUrlExtractor linkedInUrlExtractor;
@@ -46,6 +81,49 @@ public class CandidateDiscoveryProcessor
         linkedInUrlExtractor = new LinkedInUrlExtractor();
         linkedInClient = new BrightDataLinkedInClient();
         investorProfileExtractor = new InvestorProfileExtractor();
+    }
+
+    /**
+     * Test seam: lets a test drive the discovery loop with stand-in search collaborators
+     * so the batching behaviour can be checked without a network call. Production code
+     * uses the no-argument constructor.
+     */
+    CandidateDiscoveryProcessor(
+        SearchTermGenerator searchTermGenerator0,
+        BrightDataSerpClient serpClient0,
+        LinkedInUrlExtractor linkedInUrlExtractor0,
+        BrightDataLinkedInClient linkedInClient0,
+        InvestorProfileExtractor investorProfileExtractor0)
+    {
+        searchTermGenerator = searchTermGenerator0;
+        serpClient = serpClient0;
+        linkedInUrlExtractor = linkedInUrlExtractor0;
+        linkedInClient = linkedInClient0;
+        investorProfileExtractor = investorProfileExtractor0;
+    }
+
+    /**
+     * Test seam for the batching behaviour: builds candidates and hands them to the sink
+     * every flushEveryCandidates0, exactly as the CRM append path does.
+     */
+    ArrayList<CandidateInvestor> discoverCandidatesInBatches(
+        ArrayList<InvestorProfile> seedProfiles0,
+        int maxResultsPerQuery0,
+        int maxCandidates0,
+        int flushEveryCandidates0,
+        CandidateBatchSink sink0) throws Exception
+    {
+        return discoverCandidates(
+            seedProfiles0,
+            maxResultsPerQuery0,
+            maxCandidates0,
+            false,
+            false,
+            false,
+            null,
+            flushEveryCandidates0,
+            sink0
+        );
     }
 
     public ArrayList<CandidateInvestor> discoverCandidates(
@@ -75,6 +153,30 @@ public class CandidateDiscoveryProcessor
         boolean scrapeWebsites0,
         boolean extractInvestorProfiles0,
         PreEnrichmentCrmIndex crmIndex0) throws Exception
+    {
+        return discoverCandidates(
+            seedProfiles0,
+            maxResultsPerQuery0,
+            maxCandidates0,
+            scrapeLinkedIn0,
+            scrapeWebsites0,
+            extractInvestorProfiles0,
+            crmIndex0,
+            0,
+            null
+        );
+    }
+
+    private ArrayList<CandidateInvestor> discoverCandidates(
+        ArrayList<InvestorProfile> seedProfiles0,
+        int maxResultsPerQuery0,
+        int maxCandidates0,
+        boolean scrapeLinkedIn0,
+        boolean scrapeWebsites0,
+        boolean extractInvestorProfiles0,
+        PreEnrichmentCrmIndex crmIndex0,
+        int flushEveryCandidates0,
+        CandidateBatchSink sink0) throws Exception
     {
         ArrayList<CandidateInvestor> candidates0 = new ArrayList<CandidateInvestor>();
 
@@ -131,6 +233,7 @@ public class CandidateDiscoveryProcessor
         }
 
         int processedCount0 = 0;
+        ArrayList<CandidateInvestor> pendingBatch0 = new ArrayList<CandidateInvestor>();
 
         for (DiscoveredLinkedInTarget target0 : targetMap0.values())
         {
@@ -145,6 +248,20 @@ public class CandidateDiscoveryProcessor
 
             CandidateInvestor candidate0 = buildCandidateFromRaw(raw0, extractInvestorProfiles0);
             candidates0.add(candidate0);
+            pendingBatch0.add(candidate0);
+
+            if (sink0 != null && flushEveryCandidates0 > 0 && pendingBatch0.size() >= flushEveryCandidates0)
+            {
+                sink0.accept(dedupeCandidates(pendingBatch0));
+                pendingBatch0 = new ArrayList<CandidateInvestor>();
+            }
+        }
+
+        // Whatever the last batch did not fill. Also the only flush when the caller asked
+        // for no incremental writes, which keeps the single-write behaviour available.
+        if (sink0 != null && pendingBatch0.size() > 0)
+        {
+            sink0.accept(dedupeCandidates(pendingBatch0));
         }
 
         return dedupeCandidates(candidates0);
@@ -275,19 +392,106 @@ public class CandidateDiscoveryProcessor
         boolean scrapeWebsites0,
         boolean extractInvestorProfiles0) throws Exception
     {
-        PreEnrichmentCrmIndex crmIndex0 = buildPreEnrichmentCrmIndex(context0);
-
-        ArrayList<CandidateInvestor> candidates0 = discoverCandidates(
+        return discoverAndAppendColdCandidates(
+            context0,
             seedProfiles0,
             maxResultsPerQuery0,
             maxCandidates0,
             scrapeLinkedIn0,
             scrapeWebsites0,
             extractInvestorProfiles0,
-            crmIndex0
+            DEFAULT_WRITE_EVERY_CANDIDATES0
+        );
+    }
+
+    /**
+     * Discovers candidates and appends them to the CRM every writeEveryCandidates0
+     * candidates, instead of holding every row until the run ends. Pass 0 or less to keep
+     * the old behaviour of one append after all candidates are built.
+     *
+     * Each batch append re-reads the CRM's duplicate index, so a candidate written by an
+     * earlier batch is recognised as a duplicate by a later one, and the append row is
+     * recomputed from the sheet rather than assumed.
+     */
+    public String discoverAndAppendColdCandidates(
+        SessionContext context0,
+        ArrayList<InvestorProfile> seedProfiles0,
+        int maxResultsPerQuery0,
+        int maxCandidates0,
+        boolean scrapeLinkedIn0,
+        boolean scrapeWebsites0,
+        boolean extractInvestorProfiles0,
+        int writeEveryCandidates0) throws Exception
+    {
+        if (context0 == null || context0.config == null)
+        {
+            return "ERROR: Missing session context.";
+        }
+
+        PreEnrichmentCrmIndex crmIndex0 = buildPreEnrichmentCrmIndex(context0);
+
+        final AppendOutcome running0 = new AppendOutcome();
+
+        discoverCandidates(
+            seedProfiles0,
+            maxResultsPerQuery0,
+            maxCandidates0,
+            scrapeLinkedIn0,
+            scrapeWebsites0,
+            extractInvestorProfiles0,
+            crmIndex0,
+            writeEveryCandidates0,
+            batch0 ->
+            {
+                AppendOutcome outcome0 = appendColdCandidateBatch(context0, batch0);
+
+                if (outcome0.error0 != null)
+                {
+                    throw new Exception(
+                        outcome0.error0
+                        + " (CRM rows written before this failure: "
+                        + running0.added0
+                        + ")"
+                    );
+                }
+
+                running0.add(outcome0);
+
+                System.out.println(
+                    "Wrote "
+                    + outcome0.added0
+                    + " candidate(s) to the CRM. Running total: "
+                    + running0.added0
+                    + " row(s) added, "
+                    + running0.skippedNotReady0
+                    + " not ready, "
+                    + running0.skippedDuplicates0
+                    + " duplicate(s)."
+                );
+            }
         );
 
-        return appendColdCandidatesToCrm(context0, candidates0);
+        return describeAppendOutcome(running0);
+    }
+
+    private static String describeAppendOutcome(AppendOutcome outcome0)
+    {
+        if (outcome0.added0 == 0)
+        {
+            return "Candidate discovery complete. No CRM-ready new candidates added. Skipped not-ready: "
+                + outcome0.skippedNotReady0
+                + ". Skipped duplicates: "
+                + outcome0.skippedDuplicates0
+                + ".";
+        }
+
+        return "Candidate discovery complete. New cold CRM rows added: "
+            + outcome0.added0
+            + ". Skipped not-ready: "
+            + outcome0.skippedNotReady0
+            + ". Skipped duplicates: "
+            + outcome0.skippedDuplicates0
+            + ".";
     }
 
     private RawCandidateData buildRawCandidateFromTarget(
@@ -753,6 +957,38 @@ public class CandidateDiscoveryProcessor
             return "Candidate discovery complete. No candidates to append.";
         }
 
+        AppendOutcome outcome0 = appendColdCandidateBatch(context0, candidates0);
+
+        if (outcome0.error0 != null)
+        {
+            return outcome0.error0;
+        }
+
+        return describeAppendOutcome(outcome0);
+    }
+
+    /**
+     * Appends one batch of candidates and reports what happened as counts. Split out of
+     * appendColdCandidatesToCrm so a run that writes every couple of candidates can sum
+     * its batches into one closing summary rather than emitting a sentence per write.
+     */
+    private static AppendOutcome appendColdCandidateBatch(
+        SessionContext context0,
+        ArrayList<CandidateInvestor> candidates0) throws Exception
+    {
+        AppendOutcome outcome0 = new AppendOutcome();
+
+        if (context0 == null || context0.config == null)
+        {
+            outcome0.error0 = "ERROR: Missing session context.";
+            return outcome0;
+        }
+
+        if (candidates0 == null || candidates0.size() == 0)
+        {
+            return outcome0;
+        }
+
         String spreadsheetId0 = context0.config.spreadsheetId;
         String crmTabName0 = context0.config.mainTabName;
 
@@ -766,8 +1002,6 @@ public class CandidateDiscoveryProcessor
         PreEnrichmentCrmIndex existingCrmIndex0 = buildPreEnrichmentCrmIndex(context0);
 
         ArrayList<CandidateInvestor> newCandidates0 = new ArrayList<CandidateInvestor>();
-        int skippedNotReady0 = 0;
-        int skippedDuplicates0 = 0;
 
         for (CandidateInvestor candidate0 : candidates0)
         {
@@ -780,7 +1014,7 @@ public class CandidateDiscoveryProcessor
 
             if (!candidate0.isCrmReady())
             {
-                skippedNotReady0++;
+                outcome0.skippedNotReady0++;
                 System.out.println(
                     "Skipping candidate not CRM-ready | "
                     + firstNonBlank(candidate0.fundName, candidate0.name, candidate0.linkedInUrl)
@@ -792,7 +1026,7 @@ public class CandidateDiscoveryProcessor
 
             if (candidateExistsInCrmIndex(candidate0, existingCrmIndex0))
             {
-                skippedDuplicates0++;
+                outcome0.skippedDuplicates0++;
                 continue;
             }
 
@@ -802,11 +1036,7 @@ public class CandidateDiscoveryProcessor
 
         if (newCandidates0.size() == 0)
         {
-            return "Candidate discovery complete. No CRM-ready new candidates added. Skipped not-ready: "
-                + skippedNotReady0
-                + ". Skipped duplicates: "
-                + skippedDuplicates0
-                + ".";
+            return outcome0;
         }
 
         try
@@ -823,7 +1053,8 @@ public class CandidateDiscoveryProcessor
         int fundCol0 = getColumn(crmHeaderMap0, context0.config.getCol("mainTabFundNameCol"));
         if (fundCol0 <= 0)
         {
-            return "ERROR: Could not find Fund Name column for CRM append.";
+            outcome0.error0 = "ERROR: Could not find Fund Name column for CRM append.";
+            return outcome0;
         }
 
         int nextRow0 = SheetsApp.findLastRow(
@@ -848,13 +1079,8 @@ public class CandidateDiscoveryProcessor
             newCandidates0
         );
 
-        return "Candidate discovery complete. New cold CRM rows added: "
-            + newCandidates0.size()
-            + ". Skipped not-ready: "
-            + skippedNotReady0
-            + ". Skipped duplicates: "
-            + skippedDuplicates0
-            + ".";
+        outcome0.added0 = newCandidates0.size();
+        return outcome0;
     }
 
     private static void writeNewCandidatesToCrmByColumn(
