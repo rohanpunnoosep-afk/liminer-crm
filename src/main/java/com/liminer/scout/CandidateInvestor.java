@@ -209,6 +209,17 @@ public class CandidateInvestor
             && !isBlank(contact1LinkedInUrl);
     }
 
+    /**
+     * The contact fields every downstream workflow needs: a person to look up by name.
+     * Their LinkedIn URL is useful enrichment but the background check, LP enrichment and
+     * scoring workflows all run from name plus fund, so a missing profile URL is not a
+     * reason to drop the candidate.
+     */
+    public boolean hasContactName1()
+    {
+        return !isBlank(contact1FirstName) && !isBlank(contact1LastName);
+    }
+
     public boolean hasFundInfo()
     {
         return !isBlank(fundName)
@@ -216,9 +227,24 @@ public class CandidateInvestor
             && !isBlank(fundLinkedInUrl);
     }
 
+    /**
+     * Fund Name plus Fund Website: enough to crawl the firm, resolve filings and run every
+     * enrichment workflow. Fund LinkedIn is enrichment, not a prerequisite.
+     */
+    public boolean hasMinimumFundInfo()
+    {
+        return !isBlank(fundName) && !isBlank(website);
+    }
+
+    /*
+     * CRM-readiness is deliberately the minimum a workflow needs rather than a complete row.
+     * Requiring both LinkedIn URLs dropped candidates that the background check and LP
+     * enrichment could have processed from name + fund + website alone, so those two URLs
+     * are now reported as gaps on an appended row instead of gating the append.
+     */
     public boolean isCrmReady()
     {
-        return hasContactPerson1() && hasFundInfo();
+        return hasContactName1() && hasMinimumFundInfo();
     }
 
     public String getMissingCrmReadyFields()
@@ -226,10 +252,20 @@ public class CandidateInvestor
         String result0 = "";
         result0 = addMissing(result0, "Contact 1 First Name", contact1FirstName);
         result0 = addMissing(result0, "Contact 1 Last Name", contact1LastName);
-        result0 = addMissing(result0, "Contact 1 Position", contact1Position);
-        result0 = addMissing(result0, "Contact 1 LinkedIn", contact1LinkedInUrl);
         result0 = addMissing(result0, "Fund Name", fundName);
         result0 = addMissing(result0, "Fund Website", website);
+        return result0;
+    }
+
+    /**
+     * Fields that are wanted but not required. Logged on append so a thin row is visible
+     * without being rejected.
+     */
+    public String getMissingOptionalFields()
+    {
+        String result0 = "";
+        result0 = addMissing(result0, "Contact 1 Position", contact1Position);
+        result0 = addMissing(result0, "Contact 1 LinkedIn", contact1LinkedInUrl);
         result0 = addMissing(result0, "Fund LinkedIn", fundLinkedInUrl);
         return result0;
     }

@@ -29,6 +29,19 @@ public class LinkedInScrapeResult
     public String rawJson;
     public ArrayList<String> pastWorkExperiences;
     public String pastWorkExperienceJson;
+    public ArrayList<LinkedInAffiliation> affiliations;
+
+    /**
+     * True when Bright Data returned no experience rows for this profile.
+     *
+     * Measured against the live API on 2026-09-11: the people dataset
+     * (gd_l1viktl72bvl7bjuj0) returns "experience": null for a large share of ordinary
+     * profiles - confirmed on three of five sampled, including both investors this was
+     * traced from - while still returning the topcard current_company. On those profiles
+     * there is nothing to rank, so an employer picked from the affiliation list is really
+     * just the topcard, and the caller must treat it as a lead rather than an answer.
+     */
+    public boolean experienceSectionMissing;
     public String followerCount;
     public ArrayList<String> recentPosts;
     public String recentPostsJson;
@@ -52,6 +65,8 @@ public class LinkedInScrapeResult
         rawJson = "";
         pastWorkExperiences = new ArrayList<>();
         pastWorkExperienceJson = "[]";
+        affiliations = new ArrayList<>();
+        experienceSectionMissing = false;
         followerCount = "";
         recentPosts = new ArrayList<>();
         recentPostsJson = "[]";
@@ -165,6 +180,9 @@ public class LinkedInScrapeResult
             }
         }
 
+        result0.affiliations = parseAffiliations(json0);
+        result0.experienceSectionMissing = result0.affiliations.isEmpty();
+        addCurrentCompanyAffiliation(result0);
         result0.pastWorkExperiences = parseExperiences(json0);
         result0.pastWorkExperienceJson = buildExperienceJson(result0.pastWorkExperiences);
 
@@ -220,6 +238,236 @@ public class LinkedInScrapeResult
         System.out.println("Country: " + country);
         System.out.println("Region: " + region);
         System.out.println("Past Work Experiences: " + pastWorkExperiences.size());
+        System.out.println("Affiliations: " + affiliations.size());
+    }
+
+    /*
+     * Builds the structured affiliation list from whichever experience array Bright Data
+     * returned. Unlike parseExperiences, which flattens each row to a display string, this
+     * keeps the company LinkedIn URL and the "is this current" flag so the caller can pick
+     * the right employer out of several concurrent ones.
+     */
+    private static ArrayList<LinkedInAffiliation> parseAffiliations(JSONObject json0)
+    {
+        ArrayList<LinkedInAffiliation> affiliations0 = new ArrayList<>();
+
+        JSONArray expArray0 = null;
+        for (String key0 : new String[]{"experience", "experiences", "positions"})
+        {
+            JSONArray candidate0 = json0.optJSONArray(key0);
+            if (candidate0 != null && candidate0.length() > 0)
+            {
+                expArray0 = candidate0;
+                break;
+            }
+        }
+
+        if (expArray0 == null)
+        {
+            return affiliations0;
+        }
+
+        for (int i = 0; i < expArray0.length(); i++)
+        {
+            Object entry0 = expArray0.opt(i);
+
+            if (!(entry0 instanceof JSONObject))
+            {
+                continue;
+            }
+
+            JSONObject exp0 = (JSONObject) entry0;
+
+            String company0 = firstNonBlank(
+                exp0.optString("company", ""),
+                exp0.optString("company_name", ""),
+                exp0.optString("name", "")
+            );
+
+            String companyUrl0 = firstNonBlank(
+                exp0.optString("company_linkedin_url", ""),
+                exp0.optString("company_url", ""),
+                exp0.optString("url", ""),
+                exp0.optString("link", "")
+            );
+
+            JSONObject compObj0 = exp0.optJSONObject("company");
+            if (compObj0 != null)
+            {
+                company0 = firstNonBlank(
+                    company0,
+                    compObj0.optString("name", ""),
+                    compObj0.optString("company_name", "")
+                );
+                companyUrl0 = firstNonBlank(
+                    companyUrl0,
+                    compObj0.optString("url", ""),
+                    compObj0.optString("link", ""),
+                    compObj0.optString("linkedin_url", "")
+                );
+            }
+
+            if (isBlank(company0))
+            {
+                continue;
+            }
+
+            String title0 = firstNonBlank(
+                exp0.optString("title", ""),
+                exp0.optString("subtitle", ""),
+                exp0.optString("position", "")
+            );
+
+            // Bright Data's people dataset reports tenure as start_date / end_date, where a
+            // live role carries the literal "Present", plus a human duration ("3 yrs 5 mos").
+            String startDate0 = exp0.optString("start_date", "");
+            String endDate0 = exp0.optString("end_date", "");
+            String duration0 = firstNonBlank(
+                exp0.optString("duration", ""),
+                exp0.optString("duration_short", "")
+            );
+            String dateRange0 = firstNonBlank(
+                exp0.optString("date_range", ""),
+                duration0,
+                startDate0
+            );
+
+            LinkedInAffiliation affiliation0 = new LinkedInAffiliation(
+                company0,
+                companyUrl0,
+                title0,
+                dateRange0,
+                isCurrentRole(dateRange0, endDate0, exp0),
+                affiliations0.size()
+            );
+
+            affiliation0.startDate = startDate0;
+            affiliation0.endDate = endDate0;
+            affiliation0.duration = duration0;
+
+            // Nested positions: Bright Data reports several titles held at one company as
+            // a positions array inside the company entry, so the company row itself can
+            // carry no title at all.
+            JSONArray nested0 = exp0.optJSONArray("positions");
+            if (isBlank(affiliation0.title) && nested0 != null && nested0.length() > 0)
+            {
+                JSONObject first0 = nested0.optJSONObject(0);
+                if (first0 != null)
+                {
+                    affiliation0.title = firstNonBlank(
+                        first0.optString("title", ""),
+                        first0.optString("subtitle", "")
+                    );
+                    if (isBlank(affiliation0.startDate))
+                    {
+                        affiliation0.startDate = first0.optString("start_date", "");
+                    }
+
+                    if (isBlank(affiliation0.endDate))
+                    {
+                        affiliation0.endDate = first0.optString("end_date", "");
+                    }
+
+                    if (!affiliation0.current)
+                    {
+                        affiliation0.current = isCurrentRole(
+                            firstNonBlank(first0.optString("date_range", ""), first0.optString("duration", "")),
+                            first0.optString("end_date", ""),
+                            first0
+                        );
+                    }
+                }
+            }
+
+            affiliations0.add(affiliation0);
+        }
+
+        return affiliations0;
+    }
+
+    /*
+     * Whether a role is ongoing. Bright Data writes the literal "Present" into end_date for
+     * a live role, which is the reliable signal; the rest are fallbacks for the other JSON
+     * shapes the dataset has returned over time.
+     */
+    private static boolean isCurrentRole(String dateRange0, String endDate0, JSONObject exp0)
+    {
+        if (exp0 != null && exp0.has("is_current"))
+        {
+            return exp0.optBoolean("is_current", false);
+        }
+
+        String end0 = safeString(endDate0).toLowerCase().trim();
+
+        if (end0.contains("present") || end0.equals("current") || end0.equals("now"))
+        {
+            return true;
+        }
+
+        // An end date naming a real year is a role that has ended, whatever else says.
+        if (end0.matches(".*(19|20)\\d{2}.*"))
+        {
+            return false;
+        }
+
+        String range0 = safeString(dateRange0).toLowerCase();
+
+        if (range0.contains("present") || range0.contains(" - now"))
+        {
+            return true;
+        }
+
+        // A closed year range ("2011 - 2015") is past even when end_date itself is absent.
+        if (range0.matches(".*(19|20)\\d{2}\\s*[-\u2013]\\s*(19|20)\\d{2}.*"))
+        {
+            return false;
+        }
+
+        // What is left is a row with a start and no end, i.e. open-ended.
+        return isBlank(end0) && range0.length() > 0;
+    }
+
+    /*
+     * The company LinkedIn reports as "current_company" is whatever sits at the top of the
+     * profile. It still belongs in the affiliation list, but only as one candidate among
+     * the experience rows, not as the answer.
+     */
+    private static void addCurrentCompanyAffiliation(LinkedInScrapeResult result0)
+    {
+        if (isBlank(result0.currentCompanyName))
+        {
+            return;
+        }
+
+        for (LinkedInAffiliation existing0 : result0.affiliations)
+        {
+            if (existing0.companyName.equalsIgnoreCase(result0.currentCompanyName.trim()))
+            {
+                existing0.current = true;
+                if (isBlank(existing0.companyLinkedInUrl))
+                {
+                    existing0.companyLinkedInUrl = result0.currentCompanyLinkedInUrl;
+                }
+                if (isBlank(existing0.title))
+                {
+                    existing0.title = firstNonBlank(result0.position, result0.headline, "");
+                }
+                return;
+            }
+        }
+
+        LinkedInAffiliation affiliation0 = new LinkedInAffiliation(
+            result0.currentCompanyName,
+            result0.currentCompanyLinkedInUrl,
+            firstNonBlank(result0.position, result0.headline, ""),
+            "",
+            true,
+            0
+        );
+
+        affiliation0.source = LinkedInAffiliation.SOURCE_TOPCARD;
+
+        result0.affiliations.add(0, affiliation0);
     }
 
     private static ArrayList<String> parseExperiences(JSONObject json0)

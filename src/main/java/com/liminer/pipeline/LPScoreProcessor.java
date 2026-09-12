@@ -46,6 +46,9 @@ import org.json.JSONObject;
  *      An axis where no leaf found anything is written BLANK, not 0, and the Intel
  *      Status column reports the coverage (COMPLETE / PARTIAL / NO_EVIDENCE).
  *   4. Writes five score columns + the Intelligence JSON blob column-by-column.
+ *      The FIT cell passes through curveFit() on the way out — a display-only
+ *      calibration that respaces the compressed raw range without reordering
+ *      anything (see FIT_CURVE_RAW / FIT_CURVE_DISPLAY).
  *   5. Flushes SnapshotStore queue single-threaded.
  *
  * Spreadsheet Rules: every write is column-by-column. No rectangle writes.
@@ -58,6 +61,31 @@ public class LPScoreProcessor
     private static final int MAX_ROWS_BATCH  = 25;
     private static final int ROW_POOL_SIZE   = 8;
     private static final int INTEL_JSON_MAX  = 49_000;
+
+    /*
+     * FIT display calibration curve.
+     *
+     * The raw FIT axis is a confidence-weighted mean of leaf scores, and those
+     * leaves compress hard into the bottom of the 0..1 range: ThesisFitIndicator
+     * divides matched tags by the LP's OWN tag count, so a well-enriched LP with
+     * eleven sector tags that your thesis hits once scores 0.09 — and
+     * ADVStrategyIndicator's deliberately neutral 0.50 drags any blend toward the
+     * middle-low. The result was a Fit Score column where a genuinely good LP read
+     * as a 9 and a strong one as a 34, which is unreadable as a 0-100 grade.
+     *
+     * These knots stretch the raw range the leaves actually occupy across the
+     * range a GP reads. Interpolation between them is linear and the knots are
+     * strictly increasing in both coordinates, so the curve is MONOTONE: it never
+     * reorders two LPs, it only respaces them. Both ends are pinned (0 -> 0,
+     * 1 -> 1) so "no alignment" can never present as partial fit.
+     *
+     * FIT_CURVE_RAW[i] maps to FIT_CURVE_DISPLAY[i]. Retune by editing these two
+     * arrays — nothing else reads them, and because the curve is applied at the
+     * write boundary only (see writeResultsToSheet), the Intelligence JSON keeps
+     * the raw leaf scores and a retune needs no re-run of the indicators.
+     */
+    private static final double[] FIT_CURVE_RAW     = { 0.00, 0.09, 0.34, 1.00 };
+    private static final double[] FIT_CURVE_DISPLAY = { 0.00, 0.45, 0.90, 1.00 };
 
     // Intel status values.
     private static final String STATUS_QUEUED    = "QUEUED";
@@ -514,6 +542,34 @@ public class LPScoreProcessor
         return v;
     }
 
+    /*
+     * Map a raw 0..1 FIT axis score onto the display curve defined by
+     * FIT_CURVE_RAW / FIT_CURVE_DISPLAY (piecewise-linear, monotone). Applied only
+     * where the Fit Score cell is written — the rollup, the Intelligence JSON and
+     * every leaf keep their raw values.
+     */
+    static double curveFit(double rawScore)
+    {
+        double raw = clamp01(rawScore);
+
+        for (int i = 1; i < FIT_CURVE_RAW.length; i++)
+        {
+            if (raw > FIT_CURVE_RAW[i]) continue;
+
+            double rawLo = FIT_CURVE_RAW[i - 1];
+            double rawHi = FIT_CURVE_RAW[i];
+            double span  = rawHi - rawLo;
+            // Degenerate knot spacing would divide by zero; snap to the lower knot.
+            if (span <= 0.0) return FIT_CURVE_DISPLAY[i - 1];
+
+            double t = (raw - rawLo) / span;
+            return clamp01(FIT_CURVE_DISPLAY[i - 1]
+                + t * (FIT_CURVE_DISPLAY[i] - FIT_CURVE_DISPLAY[i - 1]));
+        }
+
+        return clamp01(FIT_CURVE_DISPLAY[FIT_CURVE_DISPLAY.length - 1]);
+    }
+
     private static String buildIntelligenceJson(
         List<IndicatorResult> resources, List<IndicatorResult> fit,
         List<IndicatorResult> probNow, MacroContextModifier.MacroContext macro)
@@ -603,7 +659,7 @@ public class LPScoreProcessor
             // told the GP "this LP cannot spare a cent" when the truth was "no leaf
             // returned anything for this LP".
             resData[idx][0]  = r.hasResources ? String.format("%.0f", r.resourcesScore * 100) : "";
-            fitData[idx][0]  = r.hasFit       ? String.format("%.0f", r.fitScore * 100)       : "";
+            fitData[idx][0]  = r.hasFit       ? String.format("%.0f", curveFit(r.fitScore) * 100) : "";
             probData[idx][0] = r.hasProbNow   ? String.format("%.0f", r.probabilityNow * 100) : "";
             dateData[idx][0]   = safe(r.lastIntelDate);
             statusData[idx][0] = safe(r.intelStatus);

@@ -32,6 +32,17 @@ public class RawCandidateData
     public String contact2Position;
     public String contact2LinkedInUrl;
 
+    public String employerSelectionNote;
+    public double employerSelectionScore;
+
+    /**
+     * True when the employer pick was never actually ranked - Bright Data returned no
+     * experience rows, so the only candidate was the profile topcard. The score is
+     * meaningless in that case, so this is what decides that an open-web cross-check runs.
+     */
+    public boolean employerNeedsCrossCheck;
+    public String employerSourceUrl;
+
     public String serpTitle;
     public String serpSnippet;
     public String discoveryQuery;
@@ -61,6 +72,10 @@ public class RawCandidateData
         contact2LastName = "";
         contact2Position = "";
         contact2LinkedInUrl = "";
+        employerSelectionNote = "";
+        employerSelectionScore = 0.0;
+        employerNeedsCrossCheck = false;
+        employerSourceUrl = "";
         serpTitle = "";
         serpSnippet = "";
         discoveryQuery = "";
@@ -95,6 +110,8 @@ public class RawCandidateData
         builder0.append("Region: ").append(region).append("\n");
         builder0.append("LinkedIn Profile URL: ").append(linkedinProfileUrl).append("\n");
         builder0.append("LinkedIn Company URL: ").append(linkedinCompanyUrl).append("\n");
+        builder0.append("Employer Selection: ").append(employerSelectionNote).append("\n");
+        builder0.append("Employer Source URL: ").append(employerSourceUrl).append("\n");
         builder0.append("Contact 2 First Name: ").append(contact2FirstName).append("\n");
         builder0.append("Contact 2 Last Name: ").append(contact2LastName).append("\n");
         builder0.append("Contact 2 Position: ").append(contact2Position).append("\n");
@@ -145,6 +162,10 @@ public class RawCandidateData
         object0.put("contact2_last_name", contact2LastName);
         object0.put("contact2_position", contact2Position);
         object0.put("contact2_linkedin_url", contact2LinkedInUrl);
+        object0.put("employer_selection_note", employerSelectionNote);
+        object0.put("employer_selection_score", employerSelectionScore);
+        object0.put("employer_needs_cross_check", employerNeedsCrossCheck);
+        object0.put("employer_source_url", employerSourceUrl);
         object0.put("serp_title", serpTitle);
         object0.put("serp_snippet", serpSnippet);
         object0.put("discovery_query", discoveryQuery);
@@ -169,6 +190,7 @@ public class RawCandidateData
         System.out.println("Region: " + region);
         System.out.println("LinkedIn Profile: " + linkedinProfileUrl);
         System.out.println("LinkedIn Company: " + linkedinCompanyUrl);
+        System.out.println("Employer Selection: " + employerSelectionNote);
         System.out.println("Discovery Query: " + discoveryQuery);
         System.out.println("SERP Rank: " + serpRank);
     }

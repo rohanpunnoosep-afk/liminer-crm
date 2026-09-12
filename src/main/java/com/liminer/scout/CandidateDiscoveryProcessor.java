@@ -26,7 +26,8 @@ import org.json.JSONObject;
  * 2. Discover LinkedIn person/company targets.
  * 3. For person targets, backfill fund/company LinkedIn + website when possible.
  * 4. For company targets, backfill Contact Person 1/2 when possible.
- * 5. Only append CRM-ready rows: Contact 1 + Fund Name + Fund Website + Fund LinkedIn.
+ * 5. Only append CRM-ready rows: Contact 1 name + Fund Name + Fund Website. LinkedIn URLs
+ *    are enriched when available but no longer gate the append.
  */
 public class CandidateDiscoveryProcessor
 {
@@ -73,6 +74,8 @@ public class CandidateDiscoveryProcessor
     private LinkedInUrlExtractor linkedInUrlExtractor;
     private BrightDataLinkedInClient linkedInClient;
     private InvestorProfileExtractor investorProfileExtractor;
+    private EmployerSelector employerSelector;
+    private OpenWebEmployerResolver openWebEmployerResolver;
 
     public CandidateDiscoveryProcessor()
     {
@@ -81,6 +84,8 @@ public class CandidateDiscoveryProcessor
         linkedInUrlExtractor = new LinkedInUrlExtractor();
         linkedInClient = new BrightDataLinkedInClient();
         investorProfileExtractor = new InvestorProfileExtractor();
+        employerSelector = new EmployerSelector();
+        openWebEmployerResolver = new OpenWebEmployerResolver(serpClient);
     }
 
     /**
@@ -100,6 +105,8 @@ public class CandidateDiscoveryProcessor
         linkedInUrlExtractor = linkedInUrlExtractor0;
         linkedInClient = linkedInClient0;
         investorProfileExtractor = investorProfileExtractor0;
+        employerSelector = new EmployerSelector();
+        openWebEmployerResolver = new OpenWebEmployerResolver(serpClient0);
     }
 
     /**
@@ -542,6 +549,8 @@ public class CandidateDiscoveryProcessor
             backfillContactFromCompany(raw0, scrapeLinkedIn0);
         }
 
+        backfillWebsiteFromSearch(raw0);
+
         if (scrapeWebsites0 && !RawCandidateData.isBlank(raw0.websiteUrl))
         {
             scrapeCandidateWebsite(raw0);
@@ -554,6 +563,8 @@ public class CandidateDiscoveryProcessor
         RawCandidateData raw0,
         boolean scrapeLinkedIn0)
     {
+        crossCheckEmployerOnOpenWeb(raw0);
+
         if (RawCandidateData.isBlank(raw0.linkedinCompanyUrl) && !RawCandidateData.isBlank(raw0.fundName))
         {
             DiscoveredLinkedInTarget companyTarget0 = findFirstCompanyTargetForFund(raw0.fundName);
@@ -792,12 +803,194 @@ public class CandidateDiscoveryProcessor
         raw0.firstName = firstNonBlank(scrape0.firstName, raw0.firstName, "");
         raw0.lastName = firstNonBlank(scrape0.lastName, raw0.lastName, "");
         raw0.position = firstNonBlank(scrape0.position, scrape0.headline, raw0.position);
-        raw0.fundName = firstNonBlank(scrape0.currentCompanyName, raw0.fundName, "");
+        applySelectedEmployerToRaw(raw0, scrape0);
         raw0.websiteUrl = firstNonBlank(scrape0.companyWebsite, raw0.websiteUrl, "");
         raw0.linkedinProfileUrl = firstNonBlank(raw0.linkedinProfileUrl, scrape0.url, "");
-        raw0.linkedinCompanyUrl = firstNonBlank(scrape0.currentCompanyLinkedInUrl, raw0.linkedinCompanyUrl, "");
         raw0.country = firstNonBlank(scrape0.country, raw0.country, "");
         raw0.region = firstNonBlank(scrape0.region, raw0.region, scrape0.location);
+    }
+
+    /*
+     * Chooses which of the person's LinkedIn affiliations is their investing employer.
+     *
+     * Bright Data's "current_company" is simply the top row of the profile, so an investor
+     * who is also a member of a professional body gets the body written into Fund Name. The
+     * selector weighs every affiliation on company name, title and recency instead, and the
+     * score it returns decides whether the pick is later cross-checked on the open web.
+     */
+    private void applySelectedEmployerToRaw(RawCandidateData raw0, LinkedInScrapeResult scrape0)
+    {
+        // The SERP snippet is the person's LinkedIn headline as Google rendered it. On a
+        // profile whose experience array came back null it is the only surviving record of
+        // a second concurrent affiliation, so it is handed to the selector as a fallback
+        // source of candidates rather than being used only as evidence text.
+        EmployerSelector.EmployerChoice choice0 = employerSelector.selectEmployer(
+            scrape0,
+            firstNonBlank(raw0.serpSnippet, raw0.serpTitle, ""));
+
+        if (choice0 == null || choice0.affiliation == null)
+        {
+            raw0.fundName = firstNonBlank(scrape0.currentCompanyName, raw0.fundName, "");
+            raw0.linkedinCompanyUrl = firstNonBlank(scrape0.currentCompanyLinkedInUrl, raw0.linkedinCompanyUrl, "");
+            raw0.employerSelectionNote = "LinkedIn current_company (no affiliation list)";
+            return;
+        }
+
+        raw0.fundName = firstNonBlank(choice0.getCompanyName(), scrape0.currentCompanyName, raw0.fundName);
+        raw0.linkedinCompanyUrl = firstNonBlank(
+            choice0.getCompanyLinkedInUrl(),
+            raw0.linkedinCompanyUrl,
+            scrape0.currentCompanyLinkedInUrl
+        );
+        raw0.employerSelectionScore = choice0.score;
+        raw0.employerNeedsCrossCheck = EmployerSelector.needsCrossCheck(choice0);
+        raw0.employerSelectionNote = "LinkedIn affiliation \""
+            + choice0.affiliation.describe()
+            + "\" score="
+            + String.format("%.1f", choice0.score)
+            + " ("
+            + choice0.reason
+            + ")";
+
+        if (!choice0.getCompanyName().equalsIgnoreCase(safeString(scrape0.currentCompanyName)))
+        {
+            System.out.println(
+                "Employer selection overrode LinkedIn current_company | person="
+                + raw0.name
+                + " | current_company="
+                + scrape0.currentCompanyName
+                + " | selected="
+                + choice0.getCompanyName()
+                + " | why="
+                + choice0.reason
+            );
+        }
+    }
+
+    /*
+     * Cross-checks a weak LinkedIn employer pick against a plain search for the person.
+     *
+     * A profile that leads with a society membership scores low, and a search for the same
+     * person usually returns their firm's own team page right under the LinkedIn result.
+     * That page supplies both the fund name and the fund website, so it is adopted whenever
+     * the LinkedIn pick was weak or reads like a professional body.
+     */
+    private void crossCheckEmployerOnOpenWeb(RawCandidateData raw0)
+    {
+        boolean linkedInPickIsWeak0 = raw0.employerSelectionScore < EmployerSelector.CONFIDENT_SCORE0
+            || raw0.employerNeedsCrossCheck;
+        boolean linkedInPickIsBody0 = EmployerSelector.looksLikeMembershipBody(raw0.fundName);
+        boolean missingFund0 = RawCandidateData.isBlank(raw0.fundName);
+        boolean missingWebsite0 = RawCandidateData.isBlank(raw0.websiteUrl);
+
+        if (!linkedInPickIsWeak0 && !linkedInPickIsBody0 && !missingFund0 && !missingWebsite0)
+        {
+            return;
+        }
+
+        OpenWebEmployerResolver.EmployerLead lead0 = openWebEmployerResolver.resolveEmployer(
+            raw0.firstName,
+            raw0.lastName,
+            linkedInPickIsBody0 ? "" : raw0.fundName
+        );
+
+        if (lead0 == null || !lead0.isUsable())
+        {
+            return;
+        }
+
+        boolean replaceFundName0 = missingFund0
+            || linkedInPickIsBody0
+            || (linkedInPickIsWeak0 && EmployerSelector.looksLikeInvestingFirm(lead0.fundName));
+
+        // A cross-check exists to get off a professional body, so accepting another one is
+        // no improvement: rejecting the topcard's "American College of Healthcare
+        // Executives" only to write "Senior Housing & Healthcare Association" leaves the
+        // row just as wrong. The pick is kept rather than replaced when that happens.
+        if (replaceFundName0 && EmployerSelector.looksLikeMembershipBody(lead0.fundName))
+        {
+            System.out.println(
+                "Open-web cross-check rejected | person="
+                + (raw0.firstName + " " + raw0.lastName).trim()
+                + " | candidate=" + lead0.fundName
+                + " | reason=replacement also reads like a professional body");
+
+            replaceFundName0 = false;
+        }
+
+        if (replaceFundName0 && lead0.hasFundName())
+        {
+            System.out.println(
+                "Open-web cross-check replaced fund name | person="
+                + (raw0.firstName + " " + raw0.lastName).trim()
+                + " | was="
+                + raw0.fundName
+                + " | now="
+                + lead0.fundName
+                + " | source="
+                + lead0.sourceUrl
+            );
+
+            raw0.fundName = lead0.fundName;
+
+            // The LinkedIn company URL belonged to the rejected affiliation, so it has to go
+            // with it; backfillFundFromPerson re-resolves one from the new fund name.
+            raw0.linkedinCompanyUrl = "";
+        }
+
+        if (RawCandidateData.isBlank(raw0.websiteUrl))
+        {
+            raw0.websiteUrl = lead0.websiteUrl;
+        }
+
+        raw0.employerSourceUrl = lead0.sourceUrl;
+        raw0.employerSelectionNote = raw0.employerSelectionNote
+            + " | open-web cross-check: "
+            + lead0.fundName
+            + " via "
+            + lead0.sourceUrl;
+    }
+
+    /*
+     * Last resort for the fund website, which is a hard requirement for a CRM-ready row.
+     * LinkedIn only supplies a website when the company page lists one, so a fund whose
+     * LinkedIn page omits it would otherwise lose an otherwise complete candidate.
+     */
+    private void backfillWebsiteFromSearch(RawCandidateData raw0)
+    {
+        if (!RawCandidateData.isBlank(raw0.websiteUrl) || RawCandidateData.isBlank(raw0.fundName))
+        {
+            return;
+        }
+
+        for (String query0 : searchTermGenerator.generateFundWebsiteQueries(raw0.fundName))
+        {
+            try
+            {
+                ArrayList<SerpResult> results0 = serpClient.search(query0, 5);
+
+                for (SerpResult result0 : results0)
+                {
+                    if (result0 == null || OpenWebEmployerResolver.isBlockedDomain(result0.url))
+                    {
+                        continue;
+                    }
+
+                    String root0 = OpenWebEmployerResolver.rootUrl(result0.url);
+
+                    if (!RawCandidateData.isBlank(root0))
+                    {
+                        raw0.websiteUrl = root0;
+                        System.out.println("Fund website resolved by search | " + raw0.fundName + " -> " + root0);
+                        return;
+                    }
+                }
+            }
+            catch (Exception exception0)
+            {
+                System.out.println("Fund website search failed for " + raw0.fundName + ": " + exception0.getMessage());
+            }
+        }
     }
 
     private void applyCompanyScrapeToRaw(RawCandidateData raw0, LinkedInScrapeResult scrape0)
@@ -808,7 +1001,28 @@ public class CandidateDiscoveryProcessor
         }
 
         raw0.rawCompanyLinkedInJson = firstNonBlank(scrape0.rawJson, raw0.rawCompanyLinkedInJson, "");
-        raw0.fundName = firstNonBlank(scrape0.currentCompanyName, scrape0.name, raw0.fundName);
+
+        // The company page normally just spells the fund's name properly, so it is allowed
+        // to refine what we already have - except when it spells out a professional body we
+        // had already rejected. That is how a cross-checked name was quietly overwritten
+        // after the fact, putting the association back into Fund Name.
+        String companyPageName0 = firstNonBlank(scrape0.currentCompanyName, scrape0.name, "");
+
+        if (!RawCandidateData.isBlank(companyPageName0)
+            && EmployerSelector.looksLikeMembershipBody(companyPageName0)
+            && !RawCandidateData.isBlank(raw0.fundName)
+            && !EmployerSelector.looksLikeMembershipBody(raw0.fundName))
+        {
+            System.out.println(
+                "Company LinkedIn name ignored | kept=" + raw0.fundName
+                + " | ignored=" + companyPageName0
+                + " | reason=company page reads like a professional body");
+        }
+        else
+        {
+            raw0.fundName = firstNonBlank(companyPageName0, raw0.fundName, "");
+        }
+
         raw0.name = firstNonBlank(raw0.name, scrape0.name, raw0.fundName);
         raw0.websiteUrl = firstNonBlank(scrape0.companyWebsite, raw0.websiteUrl, "");
         raw0.linkedinCompanyUrl = firstNonBlank(raw0.linkedinCompanyUrl, scrape0.currentCompanyLinkedInUrl, scrape0.url);
@@ -1028,6 +1242,17 @@ public class CandidateDiscoveryProcessor
             {
                 outcome0.skippedDuplicates0++;
                 continue;
+            }
+
+            String missingOptional0 = candidate0.getMissingOptionalFields();
+            if (!RawCandidateData.isBlank(missingOptional0))
+            {
+                System.out.println(
+                    "Appending candidate with gaps | "
+                    + firstNonBlank(candidate0.fundName, candidate0.name, candidate0.linkedInUrl)
+                    + " | still missing: "
+                    + missingOptional0
+                );
             }
 
             newCandidates0.add(candidate0);
@@ -1895,6 +2120,11 @@ public class CandidateDiscoveryProcessor
             .replace("www.", "")
             .replaceAll("/$", "")
             .trim();
+    }
+
+    private static String safeString(String value0)
+    {
+        return value0 == null ? "" : value0;
     }
 
     private static String firstNonBlank(String a0, String b0, String c0)
