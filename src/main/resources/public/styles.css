@@ -547,6 +547,85 @@ input[type="text"]:focus {
   margin: -4px 0 6px;
 }
 
+.chip-input {
+  margin-bottom: 16px;
+}
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip-list:not(:empty) {
+  margin-bottom: 8px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  background: rgba(47, 111, 237, 0.10);
+  border: 1px solid rgba(47, 111, 237, 0.28);
+  color: var(--accent-dark);
+  border-radius: 999px;
+  padding: 4px 6px 4px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--accent-dark);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.chip-remove:hover {
+  background: rgba(47, 111, 237, 0.22);
+}
+
+.chip-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.chip-entry input[type="text"] {
+  margin-bottom: 0;
+}
+
+.btn-chip-add {
+  flex: 0 0 auto;
+  background: var(--panel);
+  border-color: var(--border);
+  color: var(--text);
+  padding: 10px 14px;
+}
+
+.btn-chip-add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .ob-actions {
   display: flex;
   justify-content: flex-end;

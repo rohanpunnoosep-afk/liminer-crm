@@ -854,6 +854,7 @@ function resetOnboardWizard() {
   obFields = { mainFields: [], intakeFields: [] };
   obSchema = null;
   obPlanValid = false;
+  clearChips();
   $("obError").hidden = true;
 }
 
@@ -881,8 +882,122 @@ function obGoToStep(step) {
   obClearError();
 }
 
+// ---- Chip inputs ----
+// Each pipe-delimited onboarding field keeps its values as separate chips.
+// They are only joined with "|" when the wizard payload is built.
+
+const CHIP_FIELDS = [
+  "obInternalNames",
+  "obInternalEmails",
+  "obSectorTags",
+  "obMicrosectorTags",
+  "obGeography",
+  "obStages",
+  "obTabNames",
+];
+
+const chipValues = new Map();
+
+function chipList(fieldId) {
+  if (!chipValues.has(fieldId)) {
+    chipValues.set(fieldId, []);
+  }
+  return chipValues.get(fieldId);
+}
+
+function renderChips(fieldId) {
+  const box = $(fieldId + "Chips");
+  if (!box) {
+    return;
+  }
+  box.textContent = "";
+  chipList(fieldId).forEach((value, index) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+
+    const text = document.createElement("span");
+    text.className = "chip-text";
+    text.textContent = value;
+    chip.appendChild(text);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "chip-remove";
+    remove.textContent = "\u00d7";
+    remove.title = "Remove " + value;
+    remove.setAttribute("aria-label", "Remove " + value);
+    remove.addEventListener("click", () => {
+      chipList(fieldId).splice(index, 1);
+      renderChips(fieldId);
+      $(fieldId).focus();
+    });
+    chip.appendChild(remove);
+
+    box.appendChild(chip);
+  });
+}
+
+function addChip(fieldId) {
+  const input = $(fieldId);
+  const value = input.value.trim();
+  input.value = "";
+  if (!value) {
+    return;
+  }
+  const values = chipList(fieldId);
+  // A duplicate would only produce a repeated segment in the joined string.
+  if (values.some((existing) => existing.toLowerCase() === value.toLowerCase())) {
+    return;
+  }
+  values.push(value);
+  renderChips(fieldId);
+}
+
+function clearChips() {
+  CHIP_FIELDS.forEach((fieldId) => {
+    chipValues.set(fieldId, []);
+    const input = $(fieldId);
+    if (input) {
+      input.value = "";
+    }
+    renderChips(fieldId);
+  });
+}
+
+function wireChipInputs() {
+  CHIP_FIELDS.forEach((fieldId) => {
+    const input = $(fieldId);
+    if (!input) {
+      return;
+    }
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addChip(fieldId);
+        input.focus();
+      } else if (e.key === "Backspace" && !input.value && chipList(fieldId).length) {
+        chipList(fieldId).pop();
+        renderChips(fieldId);
+      }
+    });
+    const btn = document.querySelector('[data-chip-add="' + fieldId + '"]');
+    if (btn) {
+      btn.addEventListener("click", () => {
+        addChip(fieldId);
+        input.focus();
+      });
+    }
+    renderChips(fieldId);
+  });
+}
+
 function obPipe(id) {
-  return $(id).value.trim();
+  if (!CHIP_FIELDS.includes(id)) {
+    return $(id).value.trim();
+  }
+  // Anything still typed but not added yet counts as a final chip.
+  addChip(id);
+  return chipList(id).join("|");
 }
 
 function handleObNext1() {
@@ -925,7 +1040,7 @@ async function handleObDetect() {
   obClearError();
 
   const spreadsheetId = $("obSpreadsheetId").value.trim();
-  const possibleTabNames = $("obTabNames").value.trim();
+  const possibleTabNames = obPipe("obTabNames");
 
   if (!spreadsheetId || !possibleTabNames) {
     obShowError("Spreadsheet ID and possible tab names are required.");
@@ -1586,6 +1701,8 @@ function init() {
     showOnboardView();
   });
   $("btnShowLogin").addEventListener("click", showLoginView);
+
+  wireChipInputs();
 
   $("btnObNext1").addEventListener("click", handleObNext1);
   $("btnObBack2").addEventListener("click", () => obGoToStep(1));

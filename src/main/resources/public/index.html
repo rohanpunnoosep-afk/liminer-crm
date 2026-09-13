@@ -61,33 +61,69 @@
             </div>
             <div class="form-field">
               <label for="obInternalNames">Internal team names</label>
-              <span class="field-hint">Separate with | — Don Smith|Jace Wang</span>
-              <input type="text" id="obInternalNames" placeholder="Don Smith|Jace Wang" />
+              <span class="field-hint">Add each teammate's name</span>
+              <div class="chip-input" data-chip-field="obInternalNames">
+                <div class="chip-list" id="obInternalNamesChips"></div>
+                <div class="chip-entry">
+                  <input type="text" id="obInternalNames" placeholder="Don Smith" />
+                  <button type="button" class="btn btn-chip-add" data-chip-add="obInternalNames">Add</button>
+                </div>
+              </div>
             </div>
             <div class="form-field">
               <label for="obInternalEmails">Internal team emails</label>
-              <span class="field-hint">Separate with | — don@acme.vc|jace@acme.vc</span>
-              <input type="text" id="obInternalEmails" placeholder="don@acme.vc|jace@acme.vc" />
+              <span class="field-hint">Add each teammate's email</span>
+              <div class="chip-input" data-chip-field="obInternalEmails">
+                <div class="chip-list" id="obInternalEmailsChips"></div>
+                <div class="chip-entry">
+                  <input type="text" id="obInternalEmails" placeholder="don@acme.vc" />
+                  <button type="button" class="btn btn-chip-add" data-chip-add="obInternalEmails">Add</button>
+                </div>
+              </div>
             </div>
             <div class="form-field">
               <label for="obSectorTags">Sector tags</label>
-              <span class="field-hint">Separate with | — Fintech|Healthcare</span>
-              <input type="text" id="obSectorTags" placeholder="Fintech|Healthcare" />
+              <span class="field-hint">Add one sector at a time</span>
+              <div class="chip-input" data-chip-field="obSectorTags">
+                <div class="chip-list" id="obSectorTagsChips"></div>
+                <div class="chip-entry">
+                  <input type="text" id="obSectorTags" placeholder="Fintech" />
+                  <button type="button" class="btn btn-chip-add" data-chip-add="obSectorTags">Add</button>
+                </div>
+              </div>
             </div>
             <div class="form-field">
               <label for="obMicrosectorTags">Microsector tags</label>
-              <span class="field-hint">Separate with | — Payments|Insurtech</span>
-              <input type="text" id="obMicrosectorTags" placeholder="Payments|Insurtech" />
+              <span class="field-hint">Add one microsector at a time</span>
+              <div class="chip-input" data-chip-field="obMicrosectorTags">
+                <div class="chip-list" id="obMicrosectorTagsChips"></div>
+                <div class="chip-entry">
+                  <input type="text" id="obMicrosectorTags" placeholder="Payments" />
+                  <button type="button" class="btn btn-chip-add" data-chip-add="obMicrosectorTags">Add</button>
+                </div>
+              </div>
             </div>
             <div class="form-field">
               <label for="obGeography">Geography</label>
-              <span class="field-hint">Separate with | — US|Canada</span>
-              <input type="text" id="obGeography" placeholder="US|Canada" />
+              <span class="field-hint">Add one geography at a time</span>
+              <div class="chip-input" data-chip-field="obGeography">
+                <div class="chip-list" id="obGeographyChips"></div>
+                <div class="chip-entry">
+                  <input type="text" id="obGeography" placeholder="US" />
+                  <button type="button" class="btn btn-chip-add" data-chip-add="obGeography">Add</button>
+                </div>
+              </div>
             </div>
             <div class="form-field">
               <label for="obStages">Stages</label>
-              <span class="field-hint">Separate with | — Seed|Series A</span>
-              <input type="text" id="obStages" placeholder="Seed|Series A" />
+              <span class="field-hint">Add one stage at a time</span>
+              <div class="chip-input" data-chip-field="obStages">
+                <div class="chip-list" id="obStagesChips"></div>
+                <div class="chip-entry">
+                  <input type="text" id="obStages" placeholder="Seed" />
+                  <button type="button" class="btn btn-chip-add" data-chip-add="obStages">Add</button>
+                </div>
+              </div>
             </div>
             <div class="form-field form-field-wide">
               <label for="obThesis">Investment thesis</label>
@@ -108,8 +144,14 @@
             </div>
             <div class="form-field form-field-wide">
               <label for="obTabNames">Possible tab names</label>
-              <span class="field-hint">Separate with | — CRM|Email Intake</span>
-              <input type="text" id="obTabNames" placeholder="CRM|Email Intake" required />
+              <span class="field-hint">Add one tab name at a time</span>
+              <div class="chip-input" data-chip-field="obTabNames">
+                <div class="chip-list" id="obTabNamesChips"></div>
+                <div class="chip-entry">
+                  <input type="text" id="obTabNames" placeholder="CRM" />
+                  <button type="button" class="btn btn-chip-add" data-chip-add="obTabNames">Add</button>
+                </div>
+              </div>
             </div>
           </div>
           <div class="ob-actions">
