@@ -15,6 +15,8 @@ let activePollHandle = null;
 let activeJobStartedMs = null;
 let durationTickHandle = null;
 const history = [];
+let pendingAskProposalId = null;
+let askInFlight = false;
 
 function saveToken(value) {
   token = value;
@@ -72,6 +74,7 @@ function showDashboardView(email) {
   $("documentsView").hidden = true;
   $("sessionBox").hidden = false;
   $("sessionEmail").textContent = email || "";
+  clearAskPanel();
 }
 
 function showOnboardView() {
@@ -143,6 +146,7 @@ function handleLogout() {
   processRunning = false;
   activeJobId = null;
   stopPolling();
+  clearAskPanel();
   showLoginView();
 }
 
@@ -565,6 +569,197 @@ async function confirmWorkflowPlan() {
     if (resolve) {
       resolve(job);
     }
+  }
+}
+
+// ---- Ask your CRM ----
+
+function clearAskPanel() {
+  pendingAskProposalId = null;
+  $("askError").hidden = true;
+  $("askAnswer").hidden = true;
+  $("askAnswer").textContent = "";
+  $("askProposalPanel").hidden = true;
+  $("askProposalRows").textContent = "";
+}
+
+async function submitAsk() {
+  const promptBox = $("askPrompt");
+  const prompt = promptBox.value.trim();
+  const errorBox = $("askError");
+  errorBox.hidden = true;
+
+  if (!prompt || askInFlight) {
+    return;
+  }
+
+  const btn = $("btnAsk");
+  const originalText = btn.textContent;
+  askInFlight = true;
+  btn.disabled = true;
+  btn.textContent = "Thinking…";
+
+  try {
+    const response = await apiFetch("/api/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      errorBox.textContent = data.error || "Could not get an answer.";
+      errorBox.hidden = false;
+      return;
+    }
+
+    $("askAnswer").textContent = data.answer || "";
+    $("askAnswer").hidden = false;
+
+    const proposals = data.proposals || [];
+    if (!data.proposalId || proposals.length === 0) {
+      pendingAskProposalId = null;
+      $("askProposalPanel").hidden = true;
+      $("askProposalRows").textContent = "";
+      return;
+    }
+
+    pendingAskProposalId = data.proposalId;
+    renderAskProposals(proposals);
+  } catch (e) {
+    errorBox.textContent = "Could not reach the server.";
+    errorBox.hidden = false;
+  } finally {
+    askInFlight = false;
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+function askCellText(value) {
+  if (value === undefined || value === null || value === "") {
+    return "—";
+  }
+  return String(value);
+}
+
+function renderAskProposals(proposals) {
+  const rowsEl = $("askProposalRows");
+  rowsEl.textContent = "";
+
+  proposals.forEach((proposal) => {
+    const tr = document.createElement("tr");
+
+    [
+      proposal.fundName,
+      proposal.contactFirstName,
+      proposal.column,
+      proposal.beforeValue,
+      proposal.afterValue,
+    ].forEach((rawValue) => {
+      const td = document.createElement("td");
+      const text = askCellText(rawValue);
+      if (text.length > 300) {
+        td.textContent = text.slice(0, 300) + "…";
+        td.title = text;
+      } else {
+        td.textContent = text;
+      }
+      tr.appendChild(td);
+    });
+
+    rowsEl.appendChild(tr);
+  });
+
+  $("askProposalSummary").textContent = `This will change ${proposals.length} cell(s) in your CRM.`;
+  $("askProposalPanel").hidden = false;
+}
+
+async function acceptAskProposals() {
+  const id = pendingAskProposalId;
+  if (!id) {
+    return;
+  }
+
+  const acceptBtn = $("btnAskAccept");
+  const rejectBtn = $("btnAskReject");
+  acceptBtn.disabled = true;
+  rejectBtn.disabled = true;
+
+  try {
+    const response = await apiFetch(`/api/ask/${encodeURIComponent(id)}/accept`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+
+    if (response.status === 404) {
+      clearAskPanel();
+      showToast("This proposal was already resolved.");
+      return;
+    }
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      showToast(data.error || "Could not apply changes.");
+      return;
+    }
+
+    clearAskPanel();
+    const applied = data.applied || 0;
+    const failed = data.failed || 0;
+    let message = `Applied ${applied} change(s).`;
+    if (failed > 0) {
+      const firstError = (data.errors && data.errors[0]) || "";
+      message += ` ${failed} failed.` + (firstError ? ` ${firstError}` : "");
+    }
+    showToast(message);
+  } catch (e) {
+    showToast("Could not reach the server.");
+  } finally {
+    acceptBtn.disabled = false;
+    rejectBtn.disabled = false;
+  }
+}
+
+async function rejectAskProposals() {
+  const id = pendingAskProposalId;
+  if (!id) {
+    return;
+  }
+
+  const acceptBtn = $("btnAskAccept");
+  const rejectBtn = $("btnAskReject");
+  acceptBtn.disabled = true;
+  rejectBtn.disabled = true;
+
+  try {
+    const response = await apiFetch(`/api/ask/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+
+    if (response.status === 404) {
+      clearAskPanel();
+      showToast("This proposal was already resolved.");
+      return;
+    }
+
+    if (!response.ok) {
+      const data = await response.json();
+      showToast(data.error || "Could not discard changes.");
+      return;
+    }
+
+    clearAskPanel();
+  } catch (e) {
+    showToast("Could not reach the server.");
+  } finally {
+    acceptBtn.disabled = false;
+    rejectBtn.disabled = false;
   }
 }
 
@@ -1722,6 +1917,16 @@ function init() {
 
   $("resetConfirmEmail").addEventListener("input", handleResetConfirmInput);
   $("btnReset").addEventListener("click", handleResetAccount);
+
+  $("btnAsk").addEventListener("click", submitAsk);
+  $("btnAskAccept").addEventListener("click", acceptAskProposals);
+  $("btnAskReject").addEventListener("click", rejectAskProposals);
+  $("askPrompt").addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      submitAsk();
+    }
+  });
 
   $("btnShowDocuments").addEventListener("click", showDocumentsView);
   $("btnDocumentsBack").addEventListener("click", () => showDashboardView($("sessionEmail").textContent));

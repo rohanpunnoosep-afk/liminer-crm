@@ -756,6 +756,89 @@ input[type="text"]:focus {
   color: #9a6400;
 }
 
+.ask-panel .ask-prompt {
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  margin-bottom: 12px;
+}
+
+.ask-panel .ask-prompt:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.18);
+}
+
+.ask-panel .ob-actions {
+  justify-content: flex-start;
+}
+
+.ask-answer {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8f9fb;
+  font-size: 14px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.ask-proposal {
+  margin-top: 20px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.ask-proposal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.ask-proposal-table th,
+.ask-proposal-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ask-proposal-table thead th {
+  background: #f0f1f4;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+.ask-proposal-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.ask-proposal-table td:nth-child(4) {
+  color: var(--danger);
+  background: rgba(208, 54, 44, 0.06);
+}
+
+.ask-proposal-table td:nth-child(5) {
+  color: #1f8a4d;
+  background: rgba(31, 138, 77, 0.08);
+  font-weight: 600;
+}
+
 @media (max-width: 480px) {
   .form-grid,
   .review-tabs,
