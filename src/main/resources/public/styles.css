@@ -961,10 +961,10 @@ input[type="text"]:focus {
   }
 }
 
-.dashboard-nav-panel {
-  display: flex;
-  justify-content: flex-end;
-  padding: 12px 24px;
+.btn-back-menu {
+  width: auto;
+  text-align: left;
+  margin-bottom: 16px;
 }
 
 .documents-view .btn-link {
@@ -1084,5 +1084,203 @@ input[type="text"]:focus {
   .brief-row {
     flex-direction: column;
     align-items: flex-start;
+  }
+}
+
+
+/* ---- Menu ---- */
+
+.menu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.menu-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+}
+
+.menu-card:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-2px);
+}
+
+.menu-card-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.menu-card-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ---- Ask Liminer chat ---- */
+
+.ask-hint {
+  margin: -8px 0 16px;
+}
+
+.ask-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.ask-thread:not(:empty) {
+  margin-bottom: 16px;
+}
+
+.ask-msg {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  max-width: 88%;
+  font-size: 14px;
+}
+
+.ask-msg-user {
+  align-self: flex-end;
+  background: rgba(47, 111, 237, 0.08);
+  border-color: rgba(47, 111, 237, 0.28);
+}
+
+.ask-msg-assistant {
+  align-self: flex-start;
+  background: #f8f9fb;
+}
+
+.ask-msg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.ask-msg-who {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.ask-msg-body {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.ask-msg-context-note {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.btn-carry {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-carry:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+.btn-carry:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.ask-context-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px dashed rgba(47, 111, 237, 0.4);
+  border-radius: 8px;
+  background: rgba(47, 111, 237, 0.04);
+}
+
+.ask-context-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.ask-context-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1 1 auto;
+}
+
+.ask-context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  background: rgba(47, 111, 237, 0.10);
+  border: 1px solid rgba(47, 111, 237, 0.28);
+  color: var(--accent-dark);
+  border-radius: 999px;
+  padding: 3px 6px 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ask-context-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ask-context-clear {
+  width: auto;
+  font-size: 12px;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.ask-view .empty-note {
+  margin-bottom: 16px;
+}
+
+/* ---- Job output follow-up ---- */
+
+.output-followup {
+  margin: 12px 0 4px;
+}
+
+@media (max-width: 480px) {
+  .ask-msg {
+    max-width: 100%;
   }
 }

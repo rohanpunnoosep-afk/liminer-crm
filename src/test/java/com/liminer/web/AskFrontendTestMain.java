@@ -114,6 +114,27 @@ public class AskFrontendTestMain
                 lastIndex = idx;
             }
 
+            check("index.html has menuView", indexBody.contains("id=\"menuView\""));
+            check("index.html has askView", indexBody.contains("id=\"askView\""));
+            check("menu has a Liminer Processes entry", indexBody.contains("id=\"btnMenuProcesses\"")
+                && indexBody.contains("Liminer Processes"));
+            check("menu has an Ask Liminer entry", indexBody.contains("id=\"btnMenuAsk\"")
+                && indexBody.contains("Ask Liminer"));
+            check("menu has a Documents entry", indexBody.contains("id=\"btnMenuDocuments\""));
+            check("dashboard no longer carries its own Documents button",
+                !indexBody.contains("id=\"btnShowDocuments\""));
+            check("dashboard has a back-to-menu link", indexBody.contains("id=\"btnProcessesBack\""));
+            check("ask view has a back-to-menu link", indexBody.contains("id=\"btnAskBack\""));
+            check("index.html has the chat transcript", indexBody.contains("id=\"askThread\""));
+            check("index.html has the carried-context bar", indexBody.contains("id=\"askContextBar\""));
+            check("index.html has the brief follow-up button", indexBody.contains("id=\"btnOutputDocuments\""));
+
+            int askViewStart = indexBody.indexOf("id=\"askView\"");
+            int proposalIdx = indexBody.indexOf("id=\"askProposalPanel\"");
+            int composerIdx = indexBody.indexOf("id=\"askPrompt\"");
+            check("proposal table lives inside the ask view", proposalIdx > askViewStart);
+            check("proposal table sits below the chat composer", proposalIdx > composerIdx);
+
             check("existing dashboard markup survives: process-grid", indexBody.contains("id=\"process-grid\""));
             check("existing dashboard markup survives: workflowPlanPanel", indexBody.contains("id=\"workflowPlanPanel\""));
             check("existing dashboard markup survives: workflowInputPanel", indexBody.contains("id=\"workflowInputPanel\""));
@@ -126,13 +147,19 @@ public class AskFrontendTestMain
             check("app.js references /reject", appJs.contains("/reject"));
             check("app.js defines submitAsk", appJs.contains("submitAsk"));
 
-            int askFnStart = appJs.indexOf("// ---- Ask your CRM ----");
+            int askFnStart = appJs.indexOf("// ---- Ask Liminer ----");
             check("app.js has the ask section marker", askFnStart >= 0);
             int askFnEnd = appJs.indexOf("function executeWorkflowRun(wf, params)", askFnStart);
             check("app.js ask section has a bounded end", askFnEnd > askFnStart);
             String askRegion = appJs.substring(askFnStart, askFnEnd);
             check("ask rendering region does not use innerHTML on answer/proposal cells", !askRegion.contains(".innerHTML ="));
             check("ask rendering region uses textContent", askRegion.contains("textContent"));
+            check("app.js builds a carried-context prompt", appJs.contains("buildAskPrompt"));
+            check("app.js keeps one message per request", appJs.contains("JSON.stringify({ prompt })"));
+            check("app.js routes views through showView", appJs.contains("function showView(")
+                && appJs.contains("showMenuView") && appJs.contains("showAskView"));
+            check("app.js reveals Documents after a brief job", appJs.contains("BRIEF_WORKFLOW_IDS")
+                && appJs.contains("outputFollowup"));
 
             String stylesCss = get("/styles.css");
             check("styles.css has .ask-panel rule", stylesCss.contains(".ask-panel"));

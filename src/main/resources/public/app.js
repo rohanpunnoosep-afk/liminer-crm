@@ -17,6 +17,10 @@ let durationTickHandle = null;
 const history = [];
 let pendingAskProposalId = null;
 let askInFlight = false;
+let currentEmail = "";
+const askMessages = [];
+const askContextIds = [];
+let askMessageSeq = 0;
 
 function saveToken(value) {
   token = value;
@@ -58,42 +62,47 @@ function showToast(message) {
   }, 3000);
 }
 
+const VIEW_IDS = ["loginView", "onboardView", "menuView", "dashboardView", "askView", "documentsView"];
+
+function showView(viewId, showSession) {
+  VIEW_IDS.forEach((id) => {
+    $(id).hidden = id !== viewId;
+  });
+  $("sessionBox").hidden = !showSession;
+  $("sessionEmail").textContent = showSession ? currentEmail : "";
+}
+
 function showLoginView() {
-  $("loginView").hidden = false;
-  $("dashboardView").hidden = true;
-  $("onboardView").hidden = true;
-  $("documentsView").hidden = true;
-  $("sessionBox").hidden = true;
+  showView("loginView", false);
   stopPolling();
 }
 
-function showDashboardView(email) {
-  $("loginView").hidden = true;
-  $("dashboardView").hidden = false;
-  $("onboardView").hidden = true;
-  $("documentsView").hidden = true;
-  $("sessionBox").hidden = false;
-  $("sessionEmail").textContent = email || "";
-  clearAskPanel();
+function showMenuView(email) {
+  if (email) {
+    currentEmail = email;
+  }
+  showView("menuView", true);
+}
+
+function showProcessesView() {
+  showView("dashboardView", true);
+}
+
+function showAskView() {
+  showView("askView", true);
+  renderAskThread();
+  $("askPrompt").focus();
 }
 
 function showOnboardView() {
-  $("loginView").hidden = true;
-  $("dashboardView").hidden = true;
-  $("onboardView").hidden = false;
-  $("documentsView").hidden = true;
-  $("sessionBox").hidden = true;
+  showView("onboardView", false);
   stopPolling();
   resetOnboardWizard();
   obGoToStep(1);
 }
 
 function showDocumentsView() {
-  $("loginView").hidden = true;
-  $("dashboardView").hidden = true;
-  $("onboardView").hidden = true;
-  $("documentsView").hidden = false;
-  $("sessionBox").hidden = false;
+  showView("documentsView", true);
   closeBriefDetail();
   loadBriefs();
 }
@@ -128,7 +137,8 @@ async function handleLogin(event) {
     }
 
     saveToken(data.token);
-    showDashboardView(data.email);
+    currentEmail = data.email || "";
+    showMenuView(currentEmail);
     await loadWorkflows();
   } catch (e) {
     errorBox.textContent = "Could not reach the server.";
@@ -145,8 +155,9 @@ function handleLogout() {
   processGroups = [];
   processRunning = false;
   activeJobId = null;
+  currentEmail = "";
   stopPolling();
-  clearAskPanel();
+  resetAskChat();
   showLoginView();
 }
 
@@ -572,32 +583,191 @@ async function confirmWorkflowPlan() {
   }
 }
 
-// ---- Ask your CRM ----
+// ---- Ask Liminer ----
 
-function clearAskPanel() {
-  pendingAskProposalId = null;
+function resetAskChat() {
+  askMessages.length = 0;
+  askContextIds.length = 0;
+  askMessageSeq = 0;
+  $("askPrompt").value = "";
+  clearAskProposal();
   $("askError").hidden = true;
-  $("askAnswer").hidden = true;
-  $("askAnswer").textContent = "";
+  renderAskThread();
+}
+
+function clearAskProposal() {
+  pendingAskProposalId = null;
   $("askProposalPanel").hidden = true;
   $("askProposalRows").textContent = "";
+  $("askProposalSummary").textContent = "";
+}
+
+function addAskMessage(role, text, contextIds) {
+  const message = {
+    id: ++askMessageSeq,
+    role,
+    text,
+    contextIds: (contextIds || []).slice(),
+  };
+  askMessages.push(message);
+  renderAskThread();
+  return message;
+}
+
+function askMessageLabel(message) {
+  const who = message.role === "user" ? "You" : "Liminer";
+  const snippet = message.text.replace(/\s+/g, " ").trim();
+  return who + ": " + (snippet.length > 40 ? snippet.slice(0, 40) + "…" : snippet);
+}
+
+function renderAskThread() {
+  const threadEl = $("askThread");
+  threadEl.textContent = "";
+
+  $("askEmpty").hidden = askMessages.length > 0;
+
+  askMessages.forEach((message) => {
+    threadEl.appendChild(buildAskBubble(message));
+  });
+
+  renderAskContextBar();
+  threadEl.scrollTop = threadEl.scrollHeight;
+}
+
+function buildAskBubble(message) {
+  const row = document.createElement("div");
+  row.className = "ask-msg ask-msg-" + message.role;
+
+  const header = document.createElement("div");
+  header.className = "ask-msg-header";
+
+  const who = document.createElement("span");
+  who.className = "ask-msg-who";
+  who.textContent = message.role === "user" ? "You" : "Liminer";
+  header.appendChild(who);
+
+  const carryBtn = document.createElement("button");
+  carryBtn.type = "button";
+  carryBtn.className = "btn btn-carry";
+  const alreadyCarried = askContextIds.includes(message.id);
+  carryBtn.textContent = alreadyCarried ? "Carried forward" : "Add to next message";
+  carryBtn.disabled = alreadyCarried;
+  carryBtn.title = "Prepend this message to what you send next";
+  carryBtn.addEventListener("click", () => carryAskMessage(message.id));
+  header.appendChild(carryBtn);
+
+  const body = document.createElement("div");
+  body.className = "ask-msg-body";
+  body.textContent = message.text;
+
+  row.appendChild(header);
+
+  if (message.role === "user" && message.contextIds.length > 0) {
+    const note = document.createElement("div");
+    note.className = "ask-msg-context-note";
+    note.textContent = "Included " + message.contextIds.length + " earlier message(s) as context.";
+    row.appendChild(note);
+  }
+
+  row.appendChild(body);
+  return row;
+}
+
+function carryAskMessage(id) {
+  if (askContextIds.includes(id)) {
+    return;
+  }
+  askContextIds.push(id);
+  renderAskThread();
+}
+
+function dropAskContext(id) {
+  const index = askContextIds.indexOf(id);
+  if (index >= 0) {
+    askContextIds.splice(index, 1);
+  }
+  renderAskThread();
+}
+
+function renderAskContextBar() {
+  const bar = $("askContextBar");
+  const chips = $("askContextChips");
+  chips.textContent = "";
+
+  if (askContextIds.length === 0) {
+    bar.hidden = true;
+    return;
+  }
+
+  askContextIds.forEach((id) => {
+    const message = askMessages.find((m) => m.id === id);
+    if (!message) return;
+
+    const chip = document.createElement("span");
+    chip.className = "ask-context-chip";
+
+    const label = document.createElement("span");
+    label.textContent = askMessageLabel(message);
+    label.title = message.text;
+    chip.appendChild(label);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "chip-remove";
+    remove.setAttribute("aria-label", "Remove carried message");
+    remove.textContent = "×";
+    remove.addEventListener("click", () => dropAskContext(id));
+    chip.appendChild(remove);
+
+    chips.appendChild(chip);
+  });
+
+  bar.hidden = false;
+}
+
+function buildAskPrompt(typed) {
+  if (askContextIds.length === 0) {
+    return typed;
+  }
+
+  const parts = [];
+  askContextIds.forEach((id) => {
+    const message = askMessages.find((m) => m.id === id);
+    if (!message) return;
+    const who = message.role === "user" ? "Earlier message from me" : "Earlier answer from you";
+    parts.push(who + ":\n" + message.text);
+  });
+
+  if (parts.length === 0) {
+    return typed;
+  }
+  return parts.join("\n\n") + "\n\nCurrent message:\n" + typed;
 }
 
 async function submitAsk() {
   const promptBox = $("askPrompt");
-  const prompt = promptBox.value.trim();
+  const typed = promptBox.value.trim();
   const errorBox = $("askError");
   errorBox.hidden = true;
 
-  if (!prompt || askInFlight) {
+  if (!typed || askInFlight) {
     return;
   }
+
+  const prompt = buildAskPrompt(typed);
+  const usedContextIds = askContextIds.slice();
 
   const btn = $("btnAsk");
   const originalText = btn.textContent;
   askInFlight = true;
   btn.disabled = true;
   btn.textContent = "Thinking…";
+
+  addAskMessage("user", typed, usedContextIds);
+  promptBox.value = "";
+  askContextIds.length = 0;
+  clearAskProposal();
+  renderAskThread();
 
   try {
     const response = await apiFetch("/api/ask", {
@@ -614,14 +784,11 @@ async function submitAsk() {
       return;
     }
 
-    $("askAnswer").textContent = data.answer || "";
-    $("askAnswer").hidden = false;
+    addAskMessage("assistant", data.answer || "");
 
     const proposals = data.proposals || [];
     if (!data.proposalId || proposals.length === 0) {
-      pendingAskProposalId = null;
-      $("askProposalPanel").hidden = true;
-      $("askProposalRows").textContent = "";
+      clearAskProposal();
       return;
     }
 
@@ -695,7 +862,7 @@ async function acceptAskProposals() {
     });
 
     if (response.status === 404) {
-      clearAskPanel();
+      clearAskProposal();
       showToast("This proposal was already resolved.");
       return;
     }
@@ -707,7 +874,7 @@ async function acceptAskProposals() {
       return;
     }
 
-    clearAskPanel();
+    clearAskProposal();
     const applied = data.applied || 0;
     const failed = data.failed || 0;
     let message = `Applied ${applied} change(s).`;
@@ -743,7 +910,7 @@ async function rejectAskProposals() {
     });
 
     if (response.status === 404) {
-      clearAskPanel();
+      clearAskProposal();
       showToast("This proposal was already resolved.");
       return;
     }
@@ -754,7 +921,7 @@ async function rejectAskProposals() {
       return;
     }
 
-    clearAskPanel();
+    clearAskProposal();
   } catch (e) {
     showToast("Could not reach the server.");
   } finally {
@@ -870,6 +1037,7 @@ function openOutputPanel(wf) {
   $("outputDuration").textContent = "";
   $("outputSummary").textContent = "";
   $("outputPre").textContent = "";
+  $("outputFollowup").hidden = true;
   setOutputCollapsed(false);
   startDurationTick();
 }
@@ -945,10 +1113,14 @@ function formatCost(cost) {
   return `${calls} call${calls === 1 ? "" : "s"} · $${usd.toFixed(4)}`;
 }
 
+const BRIEF_WORKFLOW_IDS = ["investor-brief", "investor-brief-pdf"];
+
 function finishJob(wf, job) {
   activeJobId = null;
   activeJobStartedMs = null;
   setRunButtonsDisabled(false);
+
+  $("outputFollowup").hidden = !(job.status === "DONE" && BRIEF_WORKFLOW_IDS.includes(wf.id));
 
   const durationMs = job.startedAt && job.finishedAt
     ? new Date(job.finishedAt).getTime() - new Date(job.startedAt).getTime()
@@ -1026,7 +1198,8 @@ async function tryResumeSession() {
   try {
     const response = await apiFetch("/api/session");
     const data = await response.json();
-    showDashboardView(data.email);
+    currentEmail = data.email || "";
+    showMenuView(currentEmail);
     await loadWorkflows();
   } catch (e) {
     showLoginView();
@@ -1570,7 +1743,8 @@ async function handleObConfirm() {
     }
 
     saveToken(data.token);
-    showDashboardView(data.email);
+    currentEmail = data.email || "";
+    showMenuView(currentEmail);
     await loadWorkflows();
   } catch (e) {
     obShowError("Could not reach the server.");
@@ -1921,6 +2095,10 @@ function init() {
   $("btnAsk").addEventListener("click", submitAsk);
   $("btnAskAccept").addEventListener("click", acceptAskProposals);
   $("btnAskReject").addEventListener("click", rejectAskProposals);
+  $("btnAskContextClear").addEventListener("click", () => {
+    askContextIds.length = 0;
+    renderAskThread();
+  });
   $("askPrompt").addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
@@ -1928,8 +2106,13 @@ function init() {
     }
   });
 
-  $("btnShowDocuments").addEventListener("click", showDocumentsView);
-  $("btnDocumentsBack").addEventListener("click", () => showDashboardView($("sessionEmail").textContent));
+  $("btnMenuProcesses").addEventListener("click", showProcessesView);
+  $("btnMenuAsk").addEventListener("click", showAskView);
+  $("btnMenuDocuments").addEventListener("click", showDocumentsView);
+  $("btnProcessesBack").addEventListener("click", () => showMenuView());
+  $("btnAskBack").addEventListener("click", () => showMenuView());
+  $("btnOutputDocuments").addEventListener("click", showDocumentsView);
+  $("btnDocumentsBack").addEventListener("click", () => showMenuView());
   $("btnDownloadBriefPdf").addEventListener("click", downloadActiveBriefPdf);
 
   tryResumeSession();

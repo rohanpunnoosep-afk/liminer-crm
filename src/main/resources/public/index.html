@@ -190,46 +190,32 @@
       </div>
     </section>
 
-    <section id="dashboardView" class="view dashboard-view" hidden>
-      <section class="panel dashboard-nav-panel">
-        <button type="button" class="btn btn-ghost-light" id="btnShowDocuments">Documents</button>
+    <section id="menuView" class="view menu-view" hidden>
+      <section class="panel">
+        <h2>Menu</h2>
+        <div class="menu-grid">
+          <button type="button" class="menu-card" id="btnMenuProcesses">
+            <span class="menu-card-title">Liminer Processes</span>
+            <span class="menu-card-desc">Run enrichment, analysis, and CRM workflows.</span>
+          </button>
+          <button type="button" class="menu-card" id="btnMenuAsk">
+            <span class="menu-card-title">Ask Liminer</span>
+            <span class="menu-card-desc">Chat with Liminer about your CRM and propose edits.</span>
+          </button>
+          <button type="button" class="menu-card" id="btnMenuDocuments">
+            <span class="menu-card-title">Documents</span>
+            <span class="menu-card-desc">Browse investor briefs Liminer has generated.</span>
+          </button>
+        </div>
       </section>
+    </section>
+
+    <section id="dashboardView" class="view dashboard-view" hidden>
+      <button type="button" class="btn btn-link btn-back-menu" id="btnProcessesBack">&larr; Back to menu</button>
 
       <section class="panel">
         <h2>Processes</h2>
         <div id="process-grid" class="process-grid"></div>
-      </section>
-
-      <section class="panel ask-panel" id="askPanel">
-        <h2>Ask your CRM</h2>
-        <textarea id="askPrompt" class="ask-prompt" rows="3" placeholder="What's the latest with Acme Ventures?"></textarea>
-        <div class="ob-actions">
-          <button type="button" class="btn btn-primary" id="btnAsk">Ask</button>
-        </div>
-        <p id="askError" class="error-text" hidden role="alert"></p>
-        <div id="askAnswer" class="ask-answer" hidden></div>
-
-        <div id="askProposalPanel" class="ask-proposal" hidden>
-          <p id="askProposalSummary" class="preview-summary"></p>
-          <div class="table-scroll">
-            <table id="askProposalTable" class="ask-proposal-table">
-              <thead>
-                <tr>
-                  <th>Fund Name</th>
-                  <th>Contact First Name</th>
-                  <th>Column Being Changed</th>
-                  <th>Before Value</th>
-                  <th>After Value</th>
-                </tr>
-              </thead>
-              <tbody id="askProposalRows"></tbody>
-            </table>
-          </div>
-          <div class="ob-actions">
-            <button type="button" class="btn btn-ghost-light" id="btnAskReject">Cancel</button>
-            <button type="button" class="btn btn-primary" id="btnAskAccept">Accept</button>
-          </div>
-        </div>
       </section>
 
       <section class="panel plan-panel" id="workflowInputPanel" hidden>
@@ -268,6 +254,9 @@
             <span id="outputCost" class="output-duration"></span>
             <span id="outputSummary" class="output-summary"></span>
           </div>
+          <div class="output-followup" id="outputFollowup" hidden>
+            <button type="button" class="btn btn-primary" id="btnOutputDocuments">View in Documents</button>
+          </div>
           <pre id="outputPre" class="output-pre"></pre>
 
           <h3 class="history-title">Recent jobs</h3>
@@ -296,8 +285,60 @@
       </section>
     </section>
 
+    <section id="askView" class="view ask-view" hidden>
+      <button type="button" class="btn btn-link btn-back-menu" id="btnAskBack">&larr; Back to menu</button>
+
+      <section class="panel ask-panel" id="askPanel">
+        <h2>Ask Liminer</h2>
+        <p class="field-hint ask-hint">
+          Each message is answered on its own. Use &ldquo;Add to next message&rdquo; on any earlier
+          message to carry it forward as context.
+        </p>
+
+        <div id="askThread" class="ask-thread" aria-live="polite"></div>
+        <p id="askEmpty" class="empty-note">Ask Liminer anything about your CRM to start the conversation.</p>
+
+        <div id="askContextBar" class="ask-context-bar" hidden>
+          <span class="ask-context-label">Carried forward:</span>
+          <div id="askContextChips" class="ask-context-chips"></div>
+          <button type="button" class="btn btn-link ask-context-clear" id="btnAskContextClear">Clear all</button>
+        </div>
+
+        <div class="ask-composer">
+          <textarea id="askPrompt" class="ask-prompt" rows="3" placeholder="What's the latest with Acme Ventures?"></textarea>
+          <div class="ob-actions">
+            <button type="button" class="btn btn-primary" id="btnAsk">Send</button>
+          </div>
+        </div>
+
+        <p id="askError" class="error-text" hidden role="alert"></p>
+
+        <div id="askProposalPanel" class="ask-proposal" hidden>
+          <p id="askProposalSummary" class="preview-summary"></p>
+          <div class="table-scroll">
+            <table id="askProposalTable" class="ask-proposal-table">
+              <thead>
+                <tr>
+                  <th>Fund Name</th>
+                  <th>Contact First Name</th>
+                  <th>Column Being Changed</th>
+                  <th>Before Value</th>
+                  <th>After Value</th>
+                </tr>
+              </thead>
+              <tbody id="askProposalRows"></tbody>
+            </table>
+          </div>
+          <div class="ob-actions">
+            <button type="button" class="btn btn-ghost-light" id="btnAskReject">Cancel</button>
+            <button type="button" class="btn btn-primary" id="btnAskAccept">Accept</button>
+          </div>
+        </div>
+      </section>
+    </section>
+
     <section id="documentsView" class="view documents-view" hidden>
-      <button type="button" class="btn btn-link" id="btnDocumentsBack">&larr; Back to dashboard</button>
+      <button type="button" class="btn btn-link" id="btnDocumentsBack">&larr; Back to menu</button>
 
       <section class="panel">
         <h2>Documents</h2>
