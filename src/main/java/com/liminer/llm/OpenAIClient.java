@@ -17,25 +17,6 @@ public class OpenAIClient
 
     public static JSONObject getToolCall(String prompt) throws Exception
     {
-        CostMeter activeMeter = CostMeter.current();
-
-        if (activeMeter != null)
-        {
-            activeMeter.checkCeiling();
-        }
-
-        OkHttpClient client = new OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(240, TimeUnit.SECONDS)
-            .writeTimeout(240, TimeUnit.SECONDS)
-            .callTimeout(240, TimeUnit.SECONDS)
-            .build();
-
-        JSONObject body = new JSONObject();
-        body.put("model", TOOL_CALL_MODEL);
-        body.put("input", prompt);
-        body.put("tool_choice", "auto");
-
         JSONArray tools = new JSONArray();
 
         for (ToolSpec toolSpec : ToolRegistry.TOOLS)
@@ -96,6 +77,34 @@ public class OpenAIClient
             tools.put(tool);
         }
 
+        return getToolCall(prompt, tools);
+    }
+
+    // Additive overload: same OkHttp/CostMeter/recordUsage plumbing as
+    // getToolCall(String), but takes a caller-supplied tools array instead of
+    // hardcoding ToolRegistry.TOOLS and the sheetName/tabName arguments. Used by
+    // the session-scoped com.liminer.ask agent, which has exactly one sheet and
+    // so has no sheetName/tabName concept.
+    public static JSONObject getToolCall(String prompt, JSONArray tools) throws Exception
+    {
+        CostMeter activeMeter = CostMeter.current();
+
+        if (activeMeter != null)
+        {
+            activeMeter.checkCeiling();
+        }
+
+        OkHttpClient client = new OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(240, TimeUnit.SECONDS)
+            .writeTimeout(240, TimeUnit.SECONDS)
+            .callTimeout(240, TimeUnit.SECONDS)
+            .build();
+
+        JSONObject body = new JSONObject();
+        body.put("model", TOOL_CALL_MODEL);
+        body.put("input", prompt);
+        body.put("tool_choice", "auto");
         body.put("tools", tools);
 
         Request request = new Request.Builder()
