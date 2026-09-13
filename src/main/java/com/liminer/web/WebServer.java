@@ -2,6 +2,12 @@ package com.liminer.web;
 
 import com.liminer.billing.CostCeilingExceededException;
 import com.liminer.billing.CostMeter;
+import com.liminer.ask.AskAgent;
+import com.liminer.ask.AskApplier;
+import com.liminer.ask.AskResult;
+import com.liminer.ask.OpenAiAskLlmPort;
+import com.liminer.ask.ProposedChange;
+import com.liminer.ask.SheetsAskSheetPort;
 import com.liminer.brief.InvestorBriefJson;
 import com.liminer.brief.InvestorBriefPdfRenderer;
 import com.liminer.core.CRMRegistry;
@@ -18,7 +24,10 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -64,10 +73,18 @@ public class WebServer
         JSONObject get(SessionContext context, int row) throws Exception;
     }
 
+    public interface AskPort
+    {
+        JSONObject ask(SessionContext context, String prompt) throws Exception;
+        JSONObject apply(SessionContext context, JSONArray proposals) throws Exception;
+    }
+
     public static final int DEFAULT_PORT = 7070;
     private static final int MAX_JOB_OUTPUT_CHARS = 200_000;
     private static final int MAX_COLUMNS = 200;
     private static final int MAX_CRM_ROWS = 500;
+    private static final int MAX_ASK_PROPOSAL_SETS = 20;
+    private static final int MAX_ASK_PROMPT_CHARS = 4000;
 
     private static class Job
     {
@@ -89,11 +106,18 @@ public class WebServer
     private final WorkflowRegistry workflowRegistry;
     private final OnboardPort onboardPort;
     private final BriefPort briefPort;
+    private final AskPort askPort;
     private final ConcurrentHashMap<String, SessionContext> sessions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Job> jobs = new ConcurrentHashMap<>();
     // Pending onboarding drafts (detect response + submitted input) awaiting confirm.
     // Like sessions, these are in-memory only and are lost on restart.
     private final ConcurrentHashMap<String, JSONObject> onboardDrafts = new ConcurrentHashMap<>();
+    // Pending ask proposal sets (staged writes awaiting accept/reject), keyed by
+    // proposalId and owned by the session token that staged them. In-memory only,
+    // like sessions and onboardDrafts. Capped at MAX_ASK_PROPOSAL_SETS entries;
+    // the oldest entry (by createdAt) is evicted on insert past that cap so a
+    // long-lived session cannot grow this map without bound.
+    private final ConcurrentHashMap<String, JSONObject> askProposals = new ConcurrentHashMap<>();
     private final ExecutorService workflowExecutor = Executors.newSingleThreadExecutor();
     private Javalin app;
 
@@ -114,10 +138,21 @@ public class WebServer
 
     public WebServer(LoginPort loginPort, WorkflowRegistry workflowRegistry, OnboardPort onboardPort, BriefPort briefPort)
     {
+        this(loginPort, workflowRegistry, onboardPort, briefPort, defaultAskPort());
+    }
+
+    public WebServer(
+        LoginPort loginPort,
+        WorkflowRegistry workflowRegistry,
+        OnboardPort onboardPort,
+        BriefPort briefPort,
+        AskPort askPort)
+    {
         this.loginPort = loginPort;
         this.workflowRegistry = workflowRegistry;
         this.onboardPort = onboardPort;
         this.briefPort = briefPort;
+        this.askPort = askPort;
     }
 
     private static OnboardPort defaultOnboardPort()
@@ -231,6 +266,48 @@ public class WebServer
                 }
 
                 return InvestorBriefJson.parseBlobObject(value);
+            }
+        };
+    }
+
+    private static AskPort defaultAskPort()
+    {
+        return new AskPort()
+        {
+            @Override
+            public JSONObject ask(SessionContext context, String prompt) throws Exception
+            {
+                SheetsAskSheetPort sheetPort = new SheetsAskSheetPort(context);
+                AskAgent agent = new AskAgent(context, sheetPort, new OpenAiAskLlmPort());
+                AskResult result = agent.ask(prompt);
+                return result.toJson();
+            }
+
+            @Override
+            public JSONObject apply(SessionContext context, JSONArray proposalsJson) throws Exception
+            {
+                SheetsAskSheetPort sheetPort = new SheetsAskSheetPort(context);
+                List<ProposedChange> changes = new ArrayList<>();
+
+                for (int i = 0; i < proposalsJson.length(); i++)
+                {
+                    JSONObject p = proposalsJson.getJSONObject(i);
+                    changes.add(new ProposedChange(
+                        p.optInt("row"),
+                        p.optString("fundName", ""),
+                        p.optString("contactFirstName", ""),
+                        p.optString("column", ""),
+                        p.optString("beforeValue", ""),
+                        p.optString("afterValue", "")));
+                }
+
+                AskApplier.ApplyResult applyResult = AskApplier.apply(sheetPort, changes);
+
+                JSONObject response = new JSONObject();
+                response.put("applied", applyResult.appliedCount);
+                response.put("failed", applyResult.failures.size());
+                response.put("errors", new JSONArray(applyResult.failures));
+                return response;
             }
         };
     }
@@ -858,6 +935,161 @@ public class WebServer
             writeJson(ctx, new JSONObject().put("message", result));
         });
 
+        app.post("/api/ask", ctx ->
+        {
+            String token = authenticate(ctx);
+
+            if (token == null)
+            {
+                return;
+            }
+
+            SessionContext context = sessions.get(token);
+
+            JSONObject body;
+
+            try
+            {
+                String bodyStr = ctx.body();
+                body = bodyStr == null || bodyStr.isEmpty() ? new JSONObject() : new JSONObject(bodyStr);
+            }
+            catch (Exception e)
+            {
+                body = new JSONObject();
+            }
+
+            String prompt = body.optString("prompt", "").trim();
+
+            if (prompt.isEmpty() || prompt.length() > MAX_ASK_PROMPT_CHARS)
+            {
+                ctx.status(400);
+                writeJson(ctx, new JSONObject().put("error", "prompt must be non-blank and at most "
+                    + MAX_ASK_PROMPT_CHARS + " characters"));
+                return;
+            }
+
+            JSONObject askResult;
+
+            try
+            {
+                askResult = askPort.ask(context, prompt);
+            }
+            catch (Exception e)
+            {
+                ctx.status(502);
+                writeJson(ctx, new JSONObject().put("error", e.getMessage() == null ? e.toString() : e.getMessage()));
+                return;
+            }
+
+            JSONArray proposals = askResult.optJSONArray("proposals");
+            if (proposals == null)
+            {
+                proposals = new JSONArray();
+            }
+
+            JSONObject response = new JSONObject();
+            response.put("answer", askResult.optString("answer", ""));
+
+            if (proposals.isEmpty())
+            {
+                response.put("proposalId", JSONObject.NULL);
+                response.put("proposals", new JSONArray());
+                writeJson(ctx, response);
+                return;
+            }
+
+            String proposalId = UUID.randomUUID().toString();
+
+            JSONObject pending = new JSONObject();
+            pending.put("token", token);
+            pending.put("proposals", proposals);
+            pending.put("createdAt", Instant.now().toString());
+
+            evictOldestAskProposalIfFull();
+            askProposals.put(proposalId, pending);
+
+            response.put("proposalId", proposalId);
+            response.put("proposals", proposals);
+            writeJson(ctx, response);
+        });
+
+        app.post("/api/ask/{proposalId}/accept", ctx ->
+        {
+            String token = authenticate(ctx);
+
+            if (token == null)
+            {
+                return;
+            }
+
+            String proposalId = ctx.pathParam("proposalId");
+            JSONObject pending = askProposals.get(proposalId);
+
+            if (pending == null)
+            {
+                ctx.status(404);
+                writeJson(ctx, new JSONObject().put("error", "unknown proposal"));
+                return;
+            }
+
+            if (!token.equals(pending.optString("token", null)))
+            {
+                ctx.status(403);
+                writeJson(ctx, new JSONObject().put("error", "proposal does not belong to this session"));
+                return;
+            }
+
+            SessionContext context = sessions.get(token);
+            JSONArray proposals = pending.optJSONArray("proposals");
+
+            JSONObject applyResult;
+
+            try
+            {
+                applyResult = askPort.apply(context, proposals);
+            }
+            catch (Exception e)
+            {
+                askProposals.remove(proposalId);
+                ctx.status(502);
+                writeJson(ctx, new JSONObject().put("error", e.getMessage() == null ? e.toString() : e.getMessage()));
+                return;
+            }
+
+            askProposals.remove(proposalId);
+            writeJson(ctx, applyResult);
+        });
+
+        app.post("/api/ask/{proposalId}/reject", ctx ->
+        {
+            String token = authenticate(ctx);
+
+            if (token == null)
+            {
+                return;
+            }
+
+            String proposalId = ctx.pathParam("proposalId");
+            JSONObject pending = askProposals.get(proposalId);
+
+            if (pending == null)
+            {
+                ctx.status(404);
+                writeJson(ctx, new JSONObject().put("error", "unknown proposal"));
+                return;
+            }
+
+            if (!token.equals(pending.optString("token", null)))
+            {
+                ctx.status(403);
+                writeJson(ctx, new JSONObject().put("error", "proposal does not belong to this session"));
+                return;
+            }
+
+            askProposals.remove(proposalId);
+            writeJson(ctx, new JSONObject().put("discarded", true));
+        });
+
         app.start(host, port);
     }
 
@@ -876,6 +1108,35 @@ public class WebServer
         }
 
         return token;
+    }
+
+    // Evicts the oldest (by createdAt) pending ask proposal set when the map is at
+    // capacity, so a long-running session cannot grow it without bound.
+    private void evictOldestAskProposalIfFull()
+    {
+        if (askProposals.size() < MAX_ASK_PROPOSAL_SETS)
+        {
+            return;
+        }
+
+        String oldestId = null;
+        String oldestCreatedAt = null;
+
+        for (Map.Entry<String, JSONObject> entry : askProposals.entrySet())
+        {
+            String createdAt = entry.getValue().optString("createdAt", "");
+
+            if (oldestCreatedAt == null || createdAt.compareTo(oldestCreatedAt) < 0)
+            {
+                oldestCreatedAt = createdAt;
+                oldestId = entry.getKey();
+            }
+        }
+
+        if (oldestId != null)
+        {
+            askProposals.remove(oldestId);
+        }
     }
 
     private void runJob(Job job, WorkflowRegistry.WorkflowInfo info, SessionContext context, JSONObject params)
