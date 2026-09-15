@@ -1959,8 +1959,27 @@ function closeBriefDetail() {
   $("briefDetailPanel").hidden = true;
 }
 
+// A 0-100 brief score is present only when it parses as a number. Blank cells come
+// through as "" (the row has not been scored), and 0 is a legitimate score, so the
+// test is numeric-ness, never truthiness.
+function isBriefScore(value) {
+  if (value === null || value === undefined) return false;
+  // Number("") and Number("  ") are both 0, so an unscored cell would otherwise
+  // read as a legitimate zero. Reject anything that is blank once trimmed.
+  if (typeof value === "string" && value.trim() === "") return false;
+  return Number.isFinite(Number(value));
+}
+
+// Render a 0-100 score as "72 / 100". The scale is implicit everywhere else in the
+// brief; these two lead the document with nothing around them to imply it.
+function formatBriefScore(value) {
+  if (!isBriefScore(value)) return "";
+  return `${Math.round(Number(value))} / 100`;
+}
+
 function renderBriefDetail(brief) {
   const contact = brief.contactAndFirmProfile || {};
+  const priority = brief.priorityScores || {};
   const market = brief.marketIntelligence || {};
   const relationship = brief.relationshipSummary || {};
   const callPrep = brief.callPreparation || {};
@@ -1971,6 +1990,20 @@ function renderBriefDetail(brief) {
   const contactName = [contact.firstName, contact.lastName].filter(Boolean).join(" ").trim();
   $("briefDetailTitle").textContent = contactName || "Investor Brief";
   $("briefDetailMeta").textContent = [contact.fundName, formatBriefDate(brief.asOfDate)].filter(Boolean).join(" — ");
+
+  // Priority leads the brief: Strategic Value and Action Urgency grade the whole
+  // profile (capacity + fit + identity + the live relationship), where the Market
+  // Intelligence axes further down grade standalone potential. Hidden when Tier-1
+  // has not scored the row, so a brief never opens on an empty scoreboard.
+  const hasPriority = isBriefScore(priority.strategicValue) || isBriefScore(priority.actionUrgency);
+  setBriefSection("briefSectionPriority", hasPriority, () => {
+    renderBriefFields("briefPriorityFields", [
+      ["Strategic Value", formatBriefScore(priority.strategicValue)],
+      ["Action Urgency", formatBriefScore(priority.actionUrgency)],
+      ["Why", priority.priorityReason],
+      ["Signals As Of", formatBriefDate(priority.signalDate)],
+    ], cites);
+  });
 
   setBriefSection("briefSectionExecutiveSummary", !!brief.executiveSummary, () => {
     renderCitedText($("briefExecutiveSummaryText"), brief.executiveSummary || "", cites);

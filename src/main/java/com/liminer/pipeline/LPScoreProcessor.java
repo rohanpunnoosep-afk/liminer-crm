@@ -10,6 +10,7 @@ import com.liminer.indicators.Indicator;
 import com.liminer.indicators.IndicatorRegistry;
 import com.liminer.indicators.IndicatorResult;
 import com.liminer.indicators.MacroContextModifier;
+import com.liminer.indicators.ProbabilityCalibration;
 import com.liminer.scout.IdentityResolver;
 import com.liminer.sheets.SheetsApp;
 import com.liminer.sheets.SnapshotStore;
@@ -46,9 +47,10 @@ import org.json.JSONObject;
  *      An axis where no leaf found anything is written BLANK, not 0, and the Intel
  *      Status column reports the coverage (COMPLETE / PARTIAL / NO_EVIDENCE).
  *   4. Writes five score columns + the Intelligence JSON blob column-by-column.
- *      The FIT cell passes through curveFit() on the way out — a display-only
- *      calibration that respaces the compressed raw range without reordering
- *      anything (see FIT_CURVE_RAW / FIT_CURVE_DISPLAY).
+ *      The FIT cell passes through curveFit() and the PROB_NOW cell through
+ *      ProbabilityCalibration.curve() on the way out — display-only calibrations
+ *      that respace the compressed raw ranges without reordering anything (see
+ *      FIT_CURVE_RAW / FIT_CURVE_DISPLAY and ProbabilityCalibration).
  *   5. Flushes SnapshotStore queue single-threaded.
  *
  * Spreadsheet Rules: every write is column-by-column. No rectangle writes.
@@ -667,7 +669,11 @@ public class LPScoreProcessor
             // returned anything for this LP".
             resData[idx][0]  = r.hasResources ? String.format("%.0f", r.resourcesScore * 100) : "";
             fitData[idx][0]  = r.hasFit       ? String.format("%.0f", curveFit(r.fitScore) * 100) : "";
-            probData[idx][0] = r.hasProbNow   ? String.format("%.0f", r.probabilityNow * 100) : "";
+            // Probability Now passes through the display calibration on the way out for
+            // the same reason Fit does: the raw axis compresses into the bottom of the
+            // range, and "no timing event found" must not read as "will not invest".
+            // See ProbabilityCalibration for the knots and the reasoning.
+            probData[idx][0] = r.hasProbNow   ? String.format("%.0f", ProbabilityCalibration.curve(r.probabilityNow) * 100) : "";
             dateData[idx][0]   = safe(r.lastIntelDate);
             statusData[idx][0] = safe(r.intelStatus);
             jsonData[idx][0]   = truncate(safe(r.intelligenceJson), INTEL_JSON_MAX);

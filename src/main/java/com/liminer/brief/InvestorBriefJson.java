@@ -12,7 +12,14 @@ import org.json.JSONObject;
  * per-LP intelligence package a rendering layer can turn into a meeting brief with no
  * further computation.
  *
- * The brief carries four assembled sections plus two GPT synthesis outputs:
+ * The brief carries five assembled sections plus two GPT synthesis outputs:
+ *   - priorityScores        : the Tier-1 verdict on the WHOLE profile — Strategic
+ *                             Value + Action Urgency + the deterministic Priority
+ *                             Reason. These lead the brief: unlike the market-
+ *                             intelligence axes, which grade the LP's standalone
+ *                             potential, these two fold capacity, fit, identity and
+ *                             the live state of the relationship into one answer to
+ *                             "is this worth the GP's next hour, and why now".
  *   - contactAndFirmProfile : identity + enrichment + background-check bio/career
  *   - marketIntelligence    : scores, identity keys, the MI JSON blob, and the
  *                             GPT-inferred fundingStatus (hoisted to top level)
@@ -32,6 +39,7 @@ public class InvestorBriefJson
     public static final String STATUS_FAILED   = "FAILED";
 
     public String     asOfDate;               // ISO instant the brief was generated
+    public JSONObject priorityScores;         // Tier-1 Strategic Value / Action Urgency / reason
     public JSONObject contactAndFirmProfile;  // identity + enrichment + bio
     public JSONObject marketIntelligence;     // scores + identity + MI blob + fundingStatus
     public JSONObject relationshipSummary;    // interests / sentiment / arc / commitments
@@ -47,6 +55,7 @@ public class InvestorBriefJson
     public InvestorBriefJson()
     {
         this.asOfDate = "";
+        this.priorityScores = new JSONObject();
         this.contactAndFirmProfile = new JSONObject();
         this.marketIntelligence = new JSONObject();
         this.relationshipSummary = new JSONObject();
@@ -63,6 +72,7 @@ public class InvestorBriefJson
     {
         JSONObject obj = new JSONObject();
         obj.put("asOfDate", safe(asOfDate));
+        obj.put("priorityScores", priorityScores == null ? new JSONObject() : priorityScores);
         obj.put("contactAndFirmProfile", contactAndFirmProfile == null ? new JSONObject() : contactAndFirmProfile);
         obj.put("marketIntelligence", marketIntelligence == null ? new JSONObject() : marketIntelligence);
         obj.put("relationshipSummary", relationshipSummary == null ? new JSONObject() : relationshipSummary);

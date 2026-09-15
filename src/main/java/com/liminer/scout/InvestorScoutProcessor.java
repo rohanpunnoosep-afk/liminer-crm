@@ -750,7 +750,11 @@ public class InvestorScoutProcessor
         if (fieldName0.equals("crdNumber")) return row0.record.crd > 0 ? String.valueOf(row0.record.crd) : "";
         if (fieldName0.equals("resourcesScore")) return row0.score == null ? "" : String.valueOf(row0.score.resources);
         if (fieldName0.equals("fitScore")) return String.valueOf(row0.fitScore);
-        if (fieldName0.equals("probabilityNowScore")) return row0.score == null ? "" : String.valueOf(row0.score.probabilityNow);
+        // Calibrated at the write boundary so the "Probability Now" column means the
+        // same thing whether the row came from the Scout or from LPScoreProcessor. The
+        // raw ScoutSignalScore stays uncalibrated in the Scout Evidence JSON.
+        if (fieldName0.equals("probabilityNowScore")) return row0.score == null ? ""
+            : String.valueOf(com.liminer.indicators.ProbabilityCalibration.curve0to100(row0.score.probabilityNow));
         if (fieldName0.equals("lastIntelDate")) return timestamp0;
         if (fieldName0.equals("intelStatus")) return "SCOUT_DISCOVERED";
         if (fieldName0.equals("contact1FirstName")) return firstNameOf(row0.contact1Name);

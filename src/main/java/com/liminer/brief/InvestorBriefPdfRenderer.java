@@ -86,6 +86,10 @@ public class InvestorBriefPdfRenderer
             JSONArray citations = brief.optJSONArray("citations");
 
             addHeaderBlock(doc, contact, brief.optString("asOfDate", ""));
+            // Priority leads: these two grade the whole profile, so they are the first
+            // numbers the GP sees, ahead of the standalone-potential axes in Market
+            // Intelligence. See InvestorBriefJsonProcessor.assemblePriority.
+            addPriorityScores(doc, brief.optJSONObject("priorityScores"));
             addExecutiveSummary(doc, brief.optString("executiveSummary", ""), citations);
             addContactAndFirmProfile(doc, contact);
             addMarketIntelligence(doc, brief.optJSONObject("marketIntelligence"));
@@ -163,6 +167,41 @@ public class InvestorBriefPdfRenderer
         if (!asOf.isEmpty()) doc.add(new Paragraph("As of " + asOf, META_FONT));
 
         addSpacer(doc);
+    }
+
+    /*
+     * The Tier-1 verdict. Rendered as "72 / 100" rather than the bare number the MI
+     * axes use, because these two lead the document with no surrounding scores to
+     * imply the scale, and because org.json hands back a double ("72.0") that reads
+     * as a false precision on a whole-number 0-100 grade.
+     *
+     * Skipped entirely when neither score is present — a brief for a row Tier-1 has
+     * not reached should not open with an empty scoreboard.
+     */
+    private static void addPriorityScores(Document doc, JSONObject p)
+    {
+        if (p == null || p.length() == 0) return;
+
+        String strategic = scoreOutOf100(p, "strategicValue");
+        String urgency   = scoreOutOf100(p, "actionUrgency");
+        if (isBlank(strategic) && isBlank(urgency)) return;
+
+        addSectionHeading(doc, "Priority");
+        addLabeledLine(doc, "Strategic Value", strategic);
+        addLabeledLine(doc, "Action Urgency", urgency);
+        addLabeledLine(doc, "Why", p.optString("priorityReason", ""));
+        addLabeledLine(doc, "Signals As Of", dateOnly(p.optString("signalDate", "")));
+
+        addSpacer(doc);
+    }
+
+    // Present a 0-100 score as "72 / 100"; blank when absent or non-numeric.
+    private static String scoreOutOf100(JSONObject obj, String key)
+    {
+        String raw = numOrText(obj, key);
+        if (isBlank(raw)) return "";
+        try { return Math.round(Double.parseDouble(raw)) + " / 100"; }
+        catch (NumberFormatException e) { return raw; }
     }
 
     private static void addExecutiveSummary(Document doc, String summary, JSONArray citations)

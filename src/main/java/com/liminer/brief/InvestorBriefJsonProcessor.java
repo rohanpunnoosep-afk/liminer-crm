@@ -78,6 +78,13 @@ public class InvestorBriefJsonProcessor
         "mainTabScoutEvidenceCol"
     };
 
+    // Tier-1 priority layer (Tier1SignalProcessor's denormalized human projections).
+    // These grade the WHOLE profile, so they lead the brief — see assemblePriority.
+    private static final String[] PRIORITY_KEYS = {
+        "mainTabStrategicValueCol", "mainTabActionUrgencyCol",
+        "mainTabPriorityReasonCol", "mainTabPrioritySignalDateCol"
+    };
+
     private static final String[] REL_KEYS = {
         "mainTabOutstandingCommitmentsCol", "mainTabRelationshipSummaryJsonCol",
         "mainTabRelationshipSummaryDateCol"
@@ -128,6 +135,7 @@ public class InvestorBriefJsonProcessor
         Map<String, String[][]> inputs = new HashMap<>();
         for (String key : CONTACT_KEYS) readInto(inputs, context0, headerMap, spreadsheetId, tabName, dataStartRow, key);
         for (String key : MI_KEYS)      readInto(inputs, context0, headerMap, spreadsheetId, tabName, dataStartRow, key);
+        for (String key : PRIORITY_KEYS) readInto(inputs, context0, headerMap, spreadsheetId, tabName, dataStartRow, key);
         for (String key : REL_KEYS)     readInto(inputs, context0, headerMap, spreadsheetId, tabName, dataStartRow, key);
 
         // The Last Brief Generated date is both an output column and the eligibility gate.
@@ -209,6 +217,7 @@ public class InvestorBriefJsonProcessor
     {
         InvestorBriefJson brief = new InvestorBriefJson();
 
+        brief.priorityScores        = assemblePriority(in, idx);
         brief.contactAndFirmProfile = assembleContact(in, idx);
         brief.marketIntelligence    = assembleMarketIntelligence(in, idx);
         brief.relationshipSummary   = assembleRelationship(in, idx);
@@ -261,6 +270,34 @@ public class InvestorBriefJsonProcessor
         String json = brief.toJSON().toString();
         brief.briefJson = json.length() > BRIEF_JSON_MAX ? json.substring(0, BRIEF_JSON_MAX) : json;
         return brief;
+    }
+
+    /*
+     * The Tier-1 priority verdict, lifted straight out of the CRM columns
+     * Tier1SignalProcessor writes. No computation here: these are already the
+     * denormalized 0-100 human projections, and recomputing them in the brief would
+     * let a brief disagree with the sheet the GP is looking at.
+     *
+     * They lead the brief because they answer a different question from the market-
+     * intelligence axes below. Resources / Fit / Probability Now grade the LP's
+     * standalone POTENTIAL. Strategic Value and Action Urgency grade the whole
+     * profile — capacity and fit AND identity strength AND who owes whom a reply,
+     * what was promised, how stale the thread is — into "how much is this worth"
+     * and "how soon". That is the pair a GP triages a call list on.
+     *
+     * A blank cell means Tier-1 has not run for the row yet. It stays blank rather
+     * than defaulting to 0 — the renderers skip a blank field — so an unscored LP
+     * reads as "not yet scored" instead of as the bottom of the list (the same
+     * blank-not-zero rule the MI axes follow).
+     */
+    private static JSONObject assemblePriority(Map<String, String[][]> in, int idx)
+    {
+        JSONObject p = new JSONObject();
+        putNumberOrText(p, "strategicValue", val(in, "mainTabStrategicValueCol", idx));
+        putNumberOrText(p, "actionUrgency",  val(in, "mainTabActionUrgencyCol", idx));
+        p.put("priorityReason", val(in, "mainTabPriorityReasonCol", idx));
+        p.put("signalDate",     val(in, "mainTabPrioritySignalDateCol", idx));
+        return p;
     }
 
     private static JSONObject assembleContact(Map<String, String[][]> in, int idx)
@@ -411,6 +448,9 @@ public class InvestorBriefJsonProcessor
         sb.append(gpProfile.toString()).append("\n\n");
         sb.append("LP contact and firm profile:\n");
         sb.append(brief.contactAndFirmProfile.toString()).append("\n\n");
+        sb.append("LP priority scores (deterministic Tier-1 verdict on the whole profile; ");
+        sb.append("0-100, higher is stronger; absent keys mean not yet scored):\n");
+        sb.append(brief.priorityScores.toString()).append("\n\n");
         sb.append("LP market intelligence (scores + indicators):\n");
         sb.append(brief.marketIntelligence.toString()).append("\n\n");
         sb.append("LP relationship summary:\n");
