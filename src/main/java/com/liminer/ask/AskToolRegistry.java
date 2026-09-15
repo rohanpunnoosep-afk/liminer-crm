@@ -86,6 +86,45 @@ public class AskToolRegistry
                     );
                 }
             }
+        ),
+
+        new AskToolSpec(
+            "record_interaction",
+            "Record an interaction with an investor (a meeting, call, email exchange or note). "
+                + "Use this -- never propose_cell_update -- whenever the user says something "
+                + "happened with an investor. The conversation status, interaction history, "
+                + "interaction records and last contact date are all derived programmatically "
+                + "from the description you pass in: the interaction is classified into one of "
+                + "the pre-designed conversation labels and each cell value is computed, not "
+                + "written by you. Nothing is written to the spreadsheet -- every derived value "
+                + "is staged as a proposed before/after change pending human approval.",
+            List.of(
+                new AskToolArgSpec("row", "The 1-based sheet row number of the investor.", "integer"),
+                new AskToolArgSpec(
+                    "interactionText",
+                    "The user's own description of what happened, passed through verbatim. "
+                        + "Do not summarise, relabel or embellish it.",
+                    "string"
+                ),
+                new AskToolArgSpec(
+                    "date",
+                    "The date the interaction happened as YYYY-MM-DD, or an empty string to use today.",
+                    "string"
+                )
+            ),
+            new AskToolExecutor()
+            {
+                @Override
+                public String execute(JSONObject args, AskContext context) throws Exception
+                {
+                    return recordInteraction(
+                        args.getInt("row"),
+                        args.optString("interactionText", ""),
+                        args.optString("date", ""),
+                        context
+                    );
+                }
+            }
         )
     );
 
@@ -357,53 +396,108 @@ public class AskToolRegistry
             return "ERROR: Row " + row0 + " is above the data start row.";
         }
 
+        if (isInteractionManagedColumn(header0, context))
+        {
+            return "ERROR: \"" + header0 + "\" is maintained programmatically and cannot be set "
+                + "through propose_cell_update. Call record_interaction with the row and the "
+                + "user's description of what happened instead.";
+        }
+
         String beforeValue0 = context.port.readCell(row0, col0);
         beforeValue0 = beforeValue0 == null ? "" : beforeValue0;
 
-        String fundName0 = "";
-        String contactFirstName0 = "";
-
-        Integer fundNameCol0 = context.headerMap.get(context.fundNameHeader);
-
-        if (fundNameCol0 != null)
-        {
-            String value0 = context.port.readCell(row0, fundNameCol0);
-            fundName0 = value0 == null ? "" : value0;
-        }
-
-        Integer contactFirstNameCol0 = context.headerMap.get(context.contactFirstNameHeader);
-
-        if (contactFirstNameCol0 != null)
-        {
-            String value0 = context.port.readCell(row0, contactFirstNameCol0);
-            contactFirstName0 = value0 == null ? "" : value0;
-        }
-
-        ProposedChange change0 = new ProposedChange(row0, fundName0, contactFirstName0, header0, beforeValue0, newValue0);
-
-        // Replace an existing staged change for the same (row, column) rather than
-        // appending a duplicate.
-        boolean replaced0 = false;
-
-        for (int i0 = 0; i0 < context.proposals.size(); i0++)
-        {
-            ProposedChange existing0 = context.proposals.get(i0);
-
-            if (existing0.row == row0 && existing0.column.equals(header0))
-            {
-                context.proposals.set(i0, change0);
-                replaced0 = true;
-                break;
-            }
-        }
-
-        if (!replaced0)
-        {
-            context.proposals.add(change0);
-        }
+        // Staging (row identity lookup, same-cell de-duplication) lives in
+        // AskProposals so record_interaction stages through the same path.
+        AskProposals.stage(context, row0, header0, beforeValue0, newValue0);
 
         return "STAGED: row " + row0 + ", column \"" + header0 + "\", before=\"" + beforeValue0
             + "\", after=\"" + newValue0 + "\". This change has NOT been written yet; it is "
             + "pending human approval.";
+    }
+
+    // The four columns a recorded interaction owns. The model may not set these
+    // directly -- their values are computed from the interaction itself.
+    private static boolean isInteractionManagedColumn(String header0, AskContext context)
+    {
+        if (header0 == null)
+        {
+            return false;
+        }
+
+        String[] managed0 = new String[]
+        {
+            context.session.config.getCol("mainTabStatusCol"),
+            context.session.config.getCol("mainTabInteractionHistoryCol"),
+            context.session.config.getCol("mainTabInteractionRecordsCol"),
+            context.session.config.getCol("mainTabLastContactDateCol")
+        };
+
+        for (int i0 = 0; i0 < managed0.length; i0++)
+        {
+            if (managed0[i0] != null && !managed0[i0].trim().isEmpty() && managed0[i0].equals(header0))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static String recordInteraction(
+        int row0,
+        String interactionText0,
+        String date0,
+        AskContext context) throws Exception
+    {
+        if (interactionText0 == null || interactionText0.trim().isEmpty())
+        {
+            return "ERROR: interactionText is required -- pass the user's description of what happened.";
+        }
+
+        if (row0 < context.session.config.mainTabDataStartRow)
+        {
+            return "ERROR: Row " + row0 + " is above the data start row.";
+        }
+
+        AskInteractionStager.StagedInteraction staged0 =
+            AskInteractionStager.record(context, row0, interactionText0, date0);
+
+        StringBuilder result0 = new StringBuilder();
+
+        result0
+            .append("RECORDED (staged, not written): row ").append(row0)
+            .append("\nConversation label chosen by the intake analysis: ").append(staged0.conversationLabel)
+            .append("\nInteraction date: ").append(staged0.interactionDate)
+            .append("\nOne-line summary: ").append(staged0.oneSentenceSummary)
+            .append("\nColumns staged: ").append(joinOrNone(staged0.stagedColumns));
+
+        if (!staged0.unchangedColumns.isEmpty())
+        {
+            result0.append("\nColumns already up to date (nothing staged): ")
+                .append(joinOrNone(staged0.unchangedColumns));
+        }
+
+        if (!staged0.missingColumns.isEmpty())
+        {
+            result0.append("\nColumns missing from this CRM (skipped): ")
+                .append(joinOrNone(staged0.missingColumns));
+        }
+
+        result0.append(
+            "\nThese values were computed programmatically and are pending human approval. "
+            + "Do not stage them again and do not call propose_cell_update for these columns."
+        );
+
+        return result0.toString();
+    }
+
+    private static String joinOrNone(List<String> values0)
+    {
+        if (values0 == null || values0.isEmpty())
+        {
+            return "none";
+        }
+
+        return String.join(", ", values0);
     }
 }

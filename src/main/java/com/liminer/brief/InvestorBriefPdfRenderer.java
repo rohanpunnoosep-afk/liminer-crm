@@ -11,6 +11,10 @@ import org.json.JSONObject;
 
 import com.lowagie.text.Document;
 import com.lowagie.text.Element;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import com.lowagie.text.Anchor;
 import com.lowagie.text.Font;
 import com.lowagie.text.FontFactory;
 import com.lowagie.text.PageSize;
@@ -46,6 +50,16 @@ public class InvestorBriefPdfRenderer
     private static final Font SECTION_FONT = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 13, Font.BOLD);
     private static final Font LABEL_FONT   = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 10);
     private static final Font BODY_FONT    = FontFactory.getFont(FontFactory.HELVETICA, 10);
+    // Citation markers render smaller and blue so [3] reads as a link, not as prose.
+    private static final Font CITE_FONT    = FontFactory.getFont(
+        FontFactory.HELVETICA, 7, Font.NORMAL, new java.awt.Color(0x1A, 0x4F, 0xC4));
+    private static final Font SOURCE_FONT  = FontFactory.getFont(FontFactory.HELVETICA, 8);
+    private static final Font SOURCE_LINK_FONT = FontFactory.getFont(
+        FontFactory.HELVETICA, 8, Font.UNDERLINE, new java.awt.Color(0x1A, 0x4F, 0xC4));
+
+    // Matches a citation marker like [12]. Kept identical to the web renderer's split so
+    // the two surfaces can never disagree about what counts as a marker.
+    private static final Pattern CITE_PATTERN = Pattern.compile("\\[(\\d+)\\]");
 
     // -----------------------------------------------------------------------
     // Public API
@@ -66,12 +80,18 @@ public class InvestorBriefPdfRenderer
             JSONObject contact = brief.optJSONObject("contactAndFirmProfile");
             if (contact == null) contact = new JSONObject();
 
+            // The registry the [n] markers below resolve against. Absent on briefs
+            // generated before citations existed, in which case every marker-rendering
+            // helper degrades to plain text.
+            JSONArray citations = brief.optJSONArray("citations");
+
             addHeaderBlock(doc, contact, brief.optString("asOfDate", ""));
-            addExecutiveSummary(doc, brief.optString("executiveSummary", ""));
+            addExecutiveSummary(doc, brief.optString("executiveSummary", ""), citations);
             addContactAndFirmProfile(doc, contact);
             addMarketIntelligence(doc, brief.optJSONObject("marketIntelligence"));
             addRelationshipSummary(doc, brief.optJSONObject("relationshipSummary"));
-            addCallPreparation(doc, brief.optJSONObject("callPreparation"));
+            addCallPreparation(doc, brief.optJSONObject("callPreparation"), citations);
+            addSources(doc, citations);
         }
         catch (Exception e)
         {
@@ -145,11 +165,11 @@ public class InvestorBriefPdfRenderer
         addSpacer(doc);
     }
 
-    private static void addExecutiveSummary(Document doc, String summary)
+    private static void addExecutiveSummary(Document doc, String summary, JSONArray citations)
     {
         if (isBlank(summary)) return;
         addSectionHeading(doc, "Executive Summary");
-        addParagraph(doc, summary);
+        addCitedParagraph(doc, summary, citations);
         addSpacer(doc);
     }
 
@@ -236,15 +256,15 @@ public class InvestorBriefPdfRenderer
         addSpacer(doc);
     }
 
-    private static void addCallPreparation(Document doc, JSONObject cp)
+    private static void addCallPreparation(Document doc, JSONObject cp, JSONArray citations)
     {
         if (cp == null || cp.length() == 0) return;
         addSectionHeading(doc, "Call Preparation");
 
-        addBulletSubsection(doc, "Talking Points", cp.optJSONArray("talkingPoints"));
-        addBulletSubsection(doc, "Suggested Questions", cp.optJSONArray("suggestedQuestions"));
-        addBulletSubsection(doc, "Relationship-Building Opportunities", cp.optJSONArray("relationshipBuildingOpportunities"));
-        addBulletSubsection(doc, "Recommended Next Steps", cp.optJSONArray("recommendedNextSteps"));
+        addBulletSubsection(doc, "Talking Points", cp.optJSONArray("talkingPoints"), citations);
+        addBulletSubsection(doc, "Suggested Questions", cp.optJSONArray("suggestedQuestions"), citations);
+        addBulletSubsection(doc, "Relationship-Building Opportunities", cp.optJSONArray("relationshipBuildingOpportunities"), citations);
+        addBulletSubsection(doc, "Recommended Next Steps", cp.optJSONArray("recommendedNextSteps"), citations);
 
         JSONArray objections = cp.optJSONArray("anticipatedObjections");
         if (objections != null && objections.length() > 0)
@@ -265,7 +285,7 @@ public class InvestorBriefPdfRenderer
                 {
                     text = objections.optString(i, "").trim();
                 }
-                if (!text.isEmpty()) list.add(new com.lowagie.text.ListItem(text, BODY_FONT));
+                if (!text.isEmpty()) list.add(citedListItem(text, citations));
             }
             if (!list.isEmpty()) doc.add(list);
         }
@@ -315,14 +335,19 @@ public class InvestorBriefPdfRenderer
         catch (Exception e) { throw new RuntimeException(e); }
     }
 
-    private static void addBulletSubsection(Document doc, String label, JSONArray arr)
+    private static void addBulletSubsection(Document doc, String label, JSONArray arr, JSONArray citations)
     {
         if (arr == null || arr.length() == 0) return;
         addLabeledLine(doc, label, "");
-        addBulletList(doc, arr);
+        addBulletList(doc, arr, citations);
     }
 
     private static void addBulletList(Document doc, JSONArray arr)
+    {
+        addBulletList(doc, arr, null);
+    }
+
+    private static void addBulletList(Document doc, JSONArray arr, JSONArray citations)
     {
         if (arr == null || arr.length() == 0) return;
         try
@@ -331,11 +356,121 @@ public class InvestorBriefPdfRenderer
             for (int i = 0; i < arr.length(); i++)
             {
                 String item = arr.optString(i, "").trim();
-                if (!item.isEmpty()) list.add(new com.lowagie.text.ListItem(item, BODY_FONT));
+                if (!item.isEmpty()) list.add(citedListItem(item, citations));
             }
             if (!list.isEmpty()) doc.add(list);
         }
         catch (Exception e) { throw new RuntimeException(e); }
+    }
+
+    // -----------------------------------------------------------------------
+    // Citations
+    // -----------------------------------------------------------------------
+
+    /*
+     * Split model-authored prose on [n] markers and emit each marker as a clickable
+     * Anchor into the matching registry URL. A marker with no matching entry is emitted
+     * as plain text rather than dropped -- by this point the processor has already
+     * stripped every out-of-range marker, so anything surviving here came from a brief
+     * generated before citations existed and is prose, not a citation.
+     */
+    private static Paragraph citedPhrase(String text, JSONArray citations)
+    {
+        Paragraph p = new Paragraph();
+        p.setFont(BODY_FONT);
+
+        String t = text == null ? "" : text;
+        Matcher m = CITE_PATTERN.matcher(t);
+        int last = 0;
+        while (m.find())
+        {
+            if (m.start() > last) p.add(new Phrase(t.substring(last, m.start()), BODY_FONT));
+
+            String url = citationUrl(citations, parseIndex(m.group(1)));
+            if (url.isEmpty())
+            {
+                p.add(new Phrase(m.group(0), BODY_FONT));
+            }
+            else
+            {
+                Anchor a = new Anchor(m.group(0), CITE_FONT);
+                a.setReference(url);
+                p.add(a);
+            }
+            last = m.end();
+        }
+        if (last < t.length()) p.add(new Phrase(t.substring(last), BODY_FONT));
+        return p;
+    }
+
+    private static void addCitedParagraph(Document doc, String text, JSONArray citations)
+    {
+        if (isBlank(text)) return;
+        try
+        {
+            Paragraph p = citedPhrase(text.trim(), citations);
+            p.setSpacingAfter(4);
+            doc.add(p);
+        }
+        catch (Exception e) { throw new RuntimeException(e); }
+    }
+
+    private static com.lowagie.text.ListItem citedListItem(String text, JSONArray citations)
+    {
+        return new com.lowagie.text.ListItem(citedPhrase(text, citations));
+    }
+
+    /*
+     * The numbered source list at the end of the brief. This is what makes a bare [3] in
+     * a printed (rather than clicked) brief still resolvable by a reader.
+     */
+    private static void addSources(Document doc, JSONArray citations)
+    {
+        if (citations == null || citations.length() == 0) return;
+        try
+        {
+            addSectionHeading(doc, "Sources");
+            for (int i = 0; i < citations.length(); i++)
+            {
+                JSONObject c = citations.optJSONObject(i);
+                if (c == null) continue;
+                String url = c.optString("url", "").trim();
+                if (url.isEmpty()) continue;
+
+                Paragraph p = new Paragraph();
+                p.setFont(SOURCE_FONT);
+                p.add(new Phrase("[" + c.optInt("index", i + 1) + "] ", SOURCE_FONT));
+
+                String label = c.optString("label", "").trim();
+                if (!label.isEmpty()) p.add(new Phrase(label + " — ", SOURCE_FONT));
+
+                String asOf = dateOnly(c.optString("asOfDate", ""));
+                if (!asOf.isEmpty()) p.add(new Phrase("(as of " + asOf + ") ", META_FONT));
+
+                Anchor a = new Anchor(url, SOURCE_LINK_FONT);
+                a.setReference(url);
+                p.add(a);
+                doc.add(p);
+            }
+        }
+        catch (Exception e) { throw new RuntimeException(e); }
+    }
+
+    private static String citationUrl(JSONArray citations, int index)
+    {
+        if (citations == null || index < 1) return "";
+        for (int i = 0; i < citations.length(); i++)
+        {
+            JSONObject c = citations.optJSONObject(i);
+            if (c != null && c.optInt("index", i + 1) == index) return c.optString("url", "").trim();
+        }
+        return "";
+    }
+
+    private static int parseIndex(String digits)
+    {
+        try { return Integer.parseInt(digits); }
+        catch (Exception e) { return -1; }
     }
 
     private static void addSpacer(Document doc)

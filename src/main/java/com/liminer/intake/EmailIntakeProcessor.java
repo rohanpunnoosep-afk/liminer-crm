@@ -16,6 +16,37 @@ import java.time.LocalDate;
 
 public class EmailIntakeProcessor
 {
+
+    // Shared with the Ask-your-CRM interaction recorder (com.liminer.ask): the
+    // interaction-record field list and the interaction-intelligence rules describe
+    // the same analysis in both paths, so they are declared once here instead of
+    // being restated per caller. DIRECTION_RULES_FOR_EMAIL stays email-specific.
+    public static final String INTERACTION_RECORD_FIELD_LIST =
+        "- direction\n"
+        + "- keyTopicsDiscussed\n"
+        + "- lpQuestionsAsked\n"
+        + "- commitmentsMadeByGP\n"
+        + "- lpSentiment\n"
+        + "- relationshipSignals\n";
+
+    public static final String DIRECTION_RULES_FOR_EMAIL =
+        "DIRECTION RULES:\n"
+        + "direction must be INBOUND or OUTBOUND.\n"
+        + "Use the To and From fields as the primary signal.\n"
+        + "Then examine the email body: if the greeting addresses an external/LP person "
+        + "(e.g. \"Hi [LP name]\") and the sign-off is from an internal/GP team member "
+        + "(e.g. \"Kind regards, [GP name]\"), the email is OUTBOUND.\n"
+        + "If the greeting addresses the internal GP and the sign-off is from an external LP, it is INBOUND.\n"
+        + "When in doubt, use To/From: if the From field is internal, it is OUTBOUND; if the From field is external, it is INBOUND.\n\n";
+
+    public static final String INTERACTION_INTELLIGENCE_RULES =
+        "INTERACTION INTELLIGENCE RULES:\n"
+        + "- keyTopicsDiscussed: list the main subjects discussed in the email. Empty array if none.\n"
+        + "- lpQuestionsAsked: only include questions clearly asked by the LP. Empty array if none.\n"
+        + "- commitmentsMadeByGP: only include explicit promises or action items the GP stated. Empty array if none.\n"
+        + "- lpSentiment: assess the LP's tone in this email. Must be POSITIVE, NEUTRAL, CAUTIOUS, or NEGATIVE.\n"
+        + "- relationshipSignals: notable signals about LP intent, timing, or allocation "
+        + "(e.g. \"LP mentioned evaluating other funds\", \"LP indicated timing constraints\"). Empty array if none.\n\n";
     private static final int MAX_ROWS0 = 1000;
     private static final int MAX_COLUMNS0 = 100;
     private static final int MAX_ROWS_PER_OPENAI_BATCH0 = 20;
@@ -846,7 +877,9 @@ public class EmailIntakeProcessor
         return value0 == null || value0.trim().length() == 0;
     }
 
-    private static boolean isAllowedConversationLabel(String label0)
+    // Public so the Ask-your-CRM interaction recorder validates a model-chosen
+    // label against exactly the same allowed set as intake.
+    public static boolean isAllowedConversationLabel(String label0)
     {
         return label0.equals("Reached Out")
             || label0.equals("First Interest")
@@ -1116,30 +1149,11 @@ public class EmailIntakeProcessor
             }
         }
 
-        String interactionRecordFields0 =
-            "- direction\n"
-            + "- keyTopicsDiscussed\n"
-            + "- lpQuestionsAsked\n"
-            + "- commitmentsMadeByGP\n"
-            + "- lpSentiment\n"
-            + "- relationshipSignals\n";
+        String interactionRecordFields0 = INTERACTION_RECORD_FIELD_LIST;
 
         String interactionRecordRules0 =
-            "DIRECTION RULES:\n"
-            + "direction must be INBOUND or OUTBOUND.\n"
-            + "Use the To and From fields as the primary signal.\n"
-            + "Then examine the email body: if the greeting addresses an external/LP person "
-            + "(e.g. \"Hi [LP name]\") and the sign-off is from an internal/GP team member "
-            + "(e.g. \"Kind regards, [GP name]\"), the email is OUTBOUND.\n"
-            + "If the greeting addresses the internal GP and the sign-off is from an external LP, it is INBOUND.\n"
-            + "When in doubt, use To/From: if the From field is internal, it is OUTBOUND; if the From field is external, it is INBOUND.\n\n"
-            + "INTERACTION INTELLIGENCE RULES:\n"
-            + "- keyTopicsDiscussed: list the main subjects discussed in the email. Empty array if none.\n"
-            + "- lpQuestionsAsked: only include questions clearly asked by the LP. Empty array if none.\n"
-            + "- commitmentsMadeByGP: only include explicit promises or action items the GP stated. Empty array if none.\n"
-            + "- lpSentiment: assess the LP's tone in this email. Must be POSITIVE, NEUTRAL, CAUTIOUS, or NEGATIVE.\n"
-            + "- relationshipSignals: notable signals about LP intent, timing, or allocation "
-            + "(e.g. \"LP mentioned evaluating other funds\", \"LP indicated timing constraints\"). Empty array if none.\n\n";
+            DIRECTION_RULES_FOR_EMAIL
+            + INTERACTION_INTELLIGENCE_RULES;
 
         String prompt0 =
             "You are extracting investor CRM fields from email intake rows for a venture capital fundraising CRM.\n\n"

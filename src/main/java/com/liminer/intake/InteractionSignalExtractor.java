@@ -53,6 +53,16 @@ public class InteractionSignalExtractor
         return 0;
     }
 
+    // First Interest and above un-reject a row: an allocator who passed for lack of
+    // capital can come back with a new fund. Mirrors CrmUpdater.REVIVE_REJECTED_MIN_RANK0
+    // so the stored Conversation Status and this signal cannot disagree.
+    public static final int REVIVE_REJECTED_MIN_RANK = 2;
+
+    public static boolean revivesRejected(String label0)
+    {
+        return !isTerminalLabel(label0) && stageRank(label0) >= REVIVE_REJECTED_MIN_RANK;
+    }
+
     public static boolean isTerminalLabel(String label0)
     {
         if (label0 == null) return false;
@@ -146,8 +156,22 @@ public class InteractionSignalExtractor
         // owesReply: direction of the most recent dated record.
         sig0.owesReply = isInbound(latestAnyDir0);
 
-        // Rejection: latest dated label terminal, else the CRM Conversation Status.
-        sig0.rejected = isTerminalLabel(latestAnyLabel0) || isTerminalLabel(conversationStatus0);
+        // Rejection: the latest dated record wins. A terminal label rejects; a label at
+        // First Interest or above revives, so a stale Rejected in the Conversation Status
+        // column no longer outlives the re-engagement that followed it. The column is the
+        // fallback only when the newest record says nothing either way.
+        if (isTerminalLabel(latestAnyLabel0))
+        {
+            sig0.rejected = true;
+        }
+        else if (revivesRejected(latestAnyLabel0))
+        {
+            sig0.rejected = false;
+        }
+        else
+        {
+            sig0.rejected = isTerminalLabel(conversationStatus0);
+        }
 
         // Days-since from record dates, with Last Contact Date as a fallback.
         if (latestAny0 != null)

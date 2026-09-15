@@ -21,12 +21,23 @@ public class AskAgent
     private final SessionContext session;
     private final AskSheetPort port;
     private final AskLlmPort llm;
+    private final InteractionAnalysisPort analysisPort;
 
     public AskAgent(SessionContext session, AskSheetPort port, AskLlmPort llm)
+    {
+        this(session, port, llm, new OpenAiInteractionAnalysisPort());
+    }
+
+    public AskAgent(
+        SessionContext session,
+        AskSheetPort port,
+        AskLlmPort llm,
+        InteractionAnalysisPort analysisPort)
     {
         this.session = session;
         this.port = port;
         this.llm = llm;
+        this.analysisPort = analysisPort;
     }
 
     public AskResult ask(String userPrompt) throws Exception
@@ -36,7 +47,8 @@ public class AskAgent
         String fundNameHeader0 = session.config.getCol("mainTabFundNameCol");
         String contactFirstNameHeader0 = session.config.getCol("mainTabContact1FirstNameCol");
 
-        AskContext context0 = new AskContext(session, port, headerMap0, fundNameHeader0, contactFirstNameHeader0);
+        AskContext context0 = new AskContext(
+            session, port, headerMap0, fundNameHeader0, contactFirstNameHeader0, analysisPort);
 
         String runningPrompt0 = buildSystemPreamble(session, headerMap0) + "\n\n" + userPrompt;
 
@@ -176,11 +188,32 @@ public class AskAgent
             preamble0.append(entry0.getKey()).append(" (column ").append(entry0.getValue()).append(")\n");
         }
 
+        String statusHeader0 = session.config.getCol("mainTabStatusCol");
+        String historyHeader0 = session.config.getCol("mainTabInteractionHistoryCol");
+        String recordsHeader0 = session.config.getCol("mainTabInteractionRecordsCol");
+        String lastContactHeader0 = session.config.getCol("mainTabLastContactDateCol");
+
         preamble0.append(
             "\nYou may freely read data using find_investor_rows, read_row and read_column.\n"
             + "You may NEVER write to the spreadsheet directly. If the user asks you to change, "
             + "update, or set a value, call propose_cell_update, which only stages the change "
             + "for a human to review and approve -- it does not write anything.\n"
+        );
+
+        preamble0.append(
+            "\nWhen the user is recording an interaction with an investor -- a meeting, a call, "
+            + "an email exchange, a note about what happened -- you MUST call record_interaction "
+            + "with the row and the user's description of what happened. Do NOT call "
+            + "propose_cell_update for these columns:\n"
+            + "- " + statusHeader0 + "\n"
+            + "- " + historyHeader0 + "\n"
+            + "- " + recordsHeader0 + "\n"
+            + "- " + lastContactHeader0 + "\n"
+            + "Those four columns are maintained programmatically. You do not choose their text: "
+            + "record_interaction classifies the interaction into one of the pre-designed "
+            + "conversation labels and derives each cell value itself, then stages the result for "
+            + "human approval. Pass the user's own words through as interactionText; do not "
+            + "summarise or relabel them yourself.\n"
         );
 
         return preamble0.toString();

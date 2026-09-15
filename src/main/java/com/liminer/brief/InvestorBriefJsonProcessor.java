@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -67,13 +68,14 @@ public class InvestorBriefJsonProcessor
         "mainTabContactLinkedInAboutCol", "mainTabContactPastWorkExperienceCol",
         "mainTabFundLinkedInAboutCol", "mainTabContactWebsiteBioSummaryCol",
         "mainTabContactBioCareerSummaryCol", "mainTabContactBioInstitutionsCol",
-        "mainTabContactBioEducationCol"
+        "mainTabContactBioEducationCol", "mainTabBackgroundCheckJsonCol"
     };
 
     private static final String[] MI_KEYS = {
         "mainTabResourcesScoreCol", "mainTabFitScoreCol", "mainTabProbabilityNowCol",
         "mainTabCrdNumberCol", "mainTabCikNumberCol", "mainTabLeiCol", "mainTabEinCol",
-        "mainTabIdentityStatusCol", "mainTabMarketIntelligenceJsonCol"
+        "mainTabIdentityStatusCol", "mainTabMarketIntelligenceJsonCol",
+        "mainTabScoutEvidenceCol"
     };
 
     private static final String[] REL_KEYS = {
@@ -211,8 +213,30 @@ public class InvestorBriefJsonProcessor
         brief.marketIntelligence    = assembleMarketIntelligence(in, idx);
         brief.relationshipSummary   = assembleRelationship(in, idx);
 
+        // Build the numbered source registry BEFORE either GPT pass, so both passes see
+        // identical numbering and neither model call can author a URL — it can only pick
+        // a number out of a list assembled here from the stored blobs.
+        //
+        // The background-check and scout blobs are read for their source URLs only and are
+        // deliberately NOT embedded in the brief: their values are already present as flat
+        // fields above, so embedding them would duplicate content into both the prompt and
+        // the 49,000-char Investor Brief JSON cell. The distilled registry is what the
+        // renderers need.
+        List<BriefCitations.Citation> citations = BriefCitations.collect(
+            brief.contactAndFirmProfile,
+            brief.marketIntelligence,
+            InvestorBriefJson.parseBlobObject(val(in, "mainTabBackgroundCheckJsonCol", idx)),
+            InvestorBriefJson.parseBlobObject(val(in, "mainTabScoutEvidenceCol", idx)));
+        brief.citations = BriefCitations.toJson(citations);
+        final int maxCitation = citations.size();
+
         // GPT pass 1 — strategy synthesis (derives fundingStatus, then call prep).
-        JSONObject pass1 = runStrategySynthesis(brief, gpProfile);
+        JSONObject pass1 = runStrategySynthesis(brief, gpProfile, citations);
+        // Enforcement half of the citation contract: the prompt ASKS the model to cite only
+        // from the registry; this deletes any [n] outside it. Same reasoning as the
+        // fundingStatus backstop below — a marker the GP can click had better resolve to a
+        // source we actually hold, and that cannot depend on a request.
+        BriefCitations.stripInvalidMarkersDeep(pass1, maxCitation);
         // Deterministic backstop for the prompt rule above: if the market-intelligence
         // blob has no probability_now evidence, the funding status is Unknown no matter
         // what the model returned. A prompt instruction alone is a request; this is a
@@ -228,7 +252,8 @@ public class InvestorBriefJsonProcessor
             ? pass1.optJSONObject("callPreparation") : new JSONObject();
 
         // GPT pass 2 — executive summary over the fully assembled brief.
-        brief.executiveSummary = runExecutiveSummary(brief);
+        brief.executiveSummary = BriefCitations.stripInvalidMarkers(
+            runExecutiveSummary(brief, citations), maxCitation);
 
         brief.asOfDate = Instant.now().toString();
         brief.status   = InvestorBriefJson.STATUS_COMPLETE;
@@ -346,7 +371,8 @@ public class InvestorBriefJsonProcessor
     // GPT passes
     // -----------------------------------------------------------------------
 
-    private static JSONObject runStrategySynthesis(InvestorBriefJson brief, JSONObject gpProfile) throws Exception
+    private static JSONObject runStrategySynthesis(InvestorBriefJson brief, JSONObject gpProfile,
+                                                   List<BriefCitations.Citation> citations) throws Exception
     {
         StringBuilder sb = new StringBuilder();
         sb.append("You are a fundraising strategy analyst preparing a venture-capital GP for a meeting with a prospective LP.\n\n");
@@ -374,7 +400,12 @@ public class InvestorBriefJsonProcessor
         sb.append("Do NOT infer a funding status from the LP's name, sector, size, website, or from ");
         sb.append("the fit/resources scores — only from dated probability_now evidence. ");
         sb.append("\"Unknown\" is a correct and expected answer; guessing is not.\n");
-        sb.append("2. THEN condition the rest of the synthesis (talking points, questions, objections, opportunities, next steps) on that fundingStatus and on how the GP's fund profile fits this LP.\n\n");
+        sb.append("2. THEN condition the rest of the synthesis (talking points, questions, objections, opportunities, next steps) on that fundingStatus and on how the GP's fund profile fits this LP.\n");
+        sb.append("3. Cite your sources inline using the numbered markers described below. ");
+        sb.append("Markers belong inside the JSON string values (e.g. a talking point ending in \" ... [3]\"); ");
+        sb.append("never add new JSON keys for them and never put one in fundingStatus.\n\n");
+
+        sb.append(BriefCitations.toPromptBlock(citations)).append("\n");
 
         sb.append("GP fund profile (the fund being raised):\n");
         sb.append(gpProfile.toString()).append("\n\n");
@@ -390,13 +421,17 @@ public class InvestorBriefJsonProcessor
         return parsed != null ? parsed : new JSONObject();
     }
 
-    private static String runExecutiveSummary(InvestorBriefJson brief) throws Exception
+    private static String runExecutiveSummary(InvestorBriefJson brief,
+                                              List<BriefCitations.Citation> citations) throws Exception
     {
         StringBuilder sb = new StringBuilder();
         sb.append("You are a fundraising analyst writing the executive summary at the top of an LP meeting brief.\n");
         sb.append("Write a single tight paragraph of 5 to 7 sentences that a GP can read in under a minute before the call.\n");
         sb.append("Cover who the LP is, their funding status and fit, the state of the relationship, and the most important things to do on the call.\n");
-        sb.append("Return ONLY the paragraph as plain text. No markdown, no headings, no JSON.\n\n");
+        sb.append("Return ONLY the paragraph as plain text. No markdown, no headings, no JSON.\n");
+        sb.append("Cite inline using the numbered markers described below, placing each marker ");
+        sb.append("immediately after the claim it supports.\n\n");
+        sb.append(BriefCitations.toPromptBlock(citations)).append("\n");
         sb.append("Brief so far:\n");
         sb.append(brief.toJSON().toString());
 

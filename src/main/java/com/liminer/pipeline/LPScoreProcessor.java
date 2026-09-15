@@ -609,6 +609,13 @@ public class LPScoreProcessor
             o.put("sourceUrl", safe(r.sourceUrl));
             o.put("asOfDate", safe(r.asOfDate));
             o.put("theme", safe(r.theme));
+            // The leaf's own sentence about WHY it read the value it did. Dropping it
+            // here was throwing away the only human-readable provenance the leaf
+            // carries: the brief's citation labels are built from these fields, and
+            // "Reported Aum Indicator: $2.4B" is a much weaker label than the same line
+            // with "ADV Item 5.F, filed 2025-03-01" behind it. Bounded tightly because
+            // every leaf pays into the one 49,000-char intelligence JSON cell.
+            o.put("evidence", truncate(safe(r.evidence), 400));
             arr.put(o);
         }
         return arr;

@@ -1,6 +1,7 @@
 package com.liminer.ask;
 
 import com.liminer.core.CRMSchemaConfig;
+import com.liminer.core.InteractionRecord;
 import com.liminer.core.SessionContext;
 
 import java.util.ArrayList;
@@ -20,7 +21,10 @@ public class AskAgentTestMain
         "Contact 1 First Name",
         "Contact 1 Last Name",
         "Conversation Status",
-        "Notes"
+        "Notes",
+        "Interaction History",
+        "Interaction Records",
+        "Last Contact Date"
     };
 
     public static void main(String[] args)
@@ -34,6 +38,10 @@ public class AskAgentTestMain
             testApplierWritesEachProposal();
             testRepeatedCallGuardReturnsCleanly();
             testToolsJsonShape();
+            testProposeCellUpdateRejectsManagedColumns();
+            testRecordInteractionStagesProgrammaticValues();
+            testRecordInteractionForcesAPredesignedLabel();
+            testRecordInteractionThroughAgentWritesNothing();
 
             System.out.println("ASK_AGENT_OK");
         }
@@ -96,7 +104,7 @@ public class AskAgentTestMain
 
         FakeAskLlmPort llm0 = new FakeAskLlmPort();
         llm0.scriptFunctionCall("propose_cell_update",
-            "{\"row\":2,\"header\":\"Conversation Status\",\"newValue\":\"Closed\"}");
+            "{\"row\":2,\"header\":\"Notes\",\"newValue\":\"Follow up next week\"}");
         llm0.scriptFinalAnswer("I've staged that change for your review.");
 
         AskAgent agent0 = new AskAgent(session0, port0, llm0);
@@ -108,9 +116,9 @@ public class AskAgentTestMain
         check("row correct", change0.row == 2);
         check("fund name correct", change0.fundName.equals("Acme Ventures"));
         check("contact first name correct", change0.contactFirstName.equals("Sam"));
-        check("column correct", change0.column.equals("Conversation Status"));
-        check("before value correct", change0.beforeValue.equals("Meetings"));
-        check("after value correct", change0.afterValue.equals("Closed"));
+        check("column correct", change0.column.equals("Notes"));
+        check("before value correct", change0.beforeValue.equals("note1"));
+        check("after value correct", change0.afterValue.equals("Follow up next week"));
 
         check("no writes performed during ask", port0.writes.isEmpty());
     }
@@ -126,9 +134,9 @@ public class AskAgentTestMain
         AskToolSpec proposeTool0 = AskToolRegistry.getToolByName("propose_cell_update");
 
         proposeTool0.executor.execute(
-            argsForPropose(2, "Conversation Status", "Closed"), context0);
+            argsForPropose(2, "Notes", "Closed"), context0);
         proposeTool0.executor.execute(
-            argsForPropose(2, "Conversation Status", "Passed"), context0);
+            argsForPropose(2, "Notes", "Passed"), context0);
 
         check("duplicate proposals collapse to one", context0.proposals.size() == 1);
         check("latest value wins", context0.proposals.get(0).afterValue.equals("Passed"));
@@ -178,10 +186,11 @@ public class AskAgentTestMain
     {
         JSONArray tools0 = AskToolRegistry.toOpenAiToolsJson();
 
-        check("exactly 4 tools", tools0.length() == 4);
+        check("exactly 5 tools", tools0.length() == 5);
 
         List<String> expectedNames0 = List.of(
-            "find_investor_rows", "read_row", "read_column", "propose_cell_update");
+            "find_investor_rows", "read_row", "read_column", "propose_cell_update",
+            "record_interaction");
 
         List<String> actualNames0 = new ArrayList<>();
 
@@ -201,6 +210,166 @@ public class AskAgentTestMain
         check("no tabName property", !toolsText0.contains("tabName"));
     }
 
+    // (h) propose_cell_update refuses the four columns a recorded interaction owns,
+    // so the model can never hand-write a conversation status or history line.
+    private static void testProposeCellUpdateRejectsManagedColumns() throws Exception
+    {
+        FakeAskSheetPort port0 = seededPort();
+        SessionContext session0 = seededSession();
+        AskContext context0 = buildContext(session0, port0);
+
+        AskToolSpec proposeTool0 = AskToolRegistry.getToolByName("propose_cell_update");
+
+        String[] managed0 = new String[]
+        {
+            "Conversation Status", "Interaction History", "Interaction Records", "Last Contact Date"
+        };
+
+        for (int i0 = 0; i0 < managed0.length; i0++)
+        {
+            String result0 = proposeTool0.executor.execute(
+                argsForPropose(2, managed0[i0], "Meeting held - interested in Fund II"), context0);
+
+            check("managed column rejected: " + managed0[i0], result0.startsWith("ERROR:"));
+            check("rejection points at record_interaction: " + managed0[i0],
+                result0.contains("record_interaction"));
+        }
+
+        check("nothing staged for managed columns", context0.proposals.isEmpty());
+        check("no writes performed", port0.writes.isEmpty());
+    }
+
+    // (i) record_interaction derives all four cells programmatically: the status
+    // becomes the pre-designed label the analysis chose, the history gains one dated
+    // line above the existing ones, the records wrapper gains one appended record,
+    // and the last contact date advances. Nothing is written.
+    private static void testRecordInteractionStagesProgrammaticValues() throws Exception
+    {
+        FakeAskSheetPort port0 = seededPort();
+        SessionContext session0 = seededSession();
+
+        FakeAnalysisPort analysis0 = new FakeAnalysisPort("Meetings", "Held a first call with Jordan about Fund II.");
+        AskContext context0 = buildContext(session0, port0, analysis0);
+
+        AskToolSpec recordTool0 = AskToolRegistry.getToolByName("record_interaction");
+
+        String result0 = recordTool0.executor.execute(
+            argsForRecord(4, "Had a call with Jordan today, he wants the deck.", "2026-03-04"), context0);
+
+        check("tool reports the staged label", result0.contains("Meetings"));
+        check("analysis ran once", analysis0.callCount == 1);
+        check("the user's own words were passed through",
+            analysis0.lastText.equals("Had a call with Jordan today, he wants the deck."));
+
+        check("four columns staged", context0.proposals.size() == 4);
+
+        ProposedChange status0 = proposalFor(context0, 4, "Conversation Status");
+        check("status staged", status0 != null);
+        check("status is exactly a pre-designed label", status0.afterValue.equals("Meetings"));
+        check("status before value preserved", status0.beforeValue.equals("Reached Out"));
+
+        ProposedChange history0 = proposalFor(context0, 4, "Interaction History");
+        check("history staged", history0 != null);
+        check("history line is date-prefixed",
+            history0.afterValue.startsWith("2026-03-04: Held a first call with Jordan about Fund II."));
+
+        ProposedChange records0 = proposalFor(context0, 4, "Interaction Records");
+        check("records staged", records0 != null);
+
+        JSONObject wrapper0 = new JSONObject(records0.afterValue);
+        JSONArray recordArray0 = wrapper0.getJSONArray(InteractionRecord.RECORDS_KEY);
+        check("exactly one record appended", recordArray0.length() == 1);
+
+        InteractionRecord appended0 = InteractionRecord.fromJSON(recordArray0.getJSONObject(0));
+        check("record carries the interaction date", appended0.date.equals("2026-03-04"));
+        check("record carries the pre-designed label", appended0.conversationLabel.equals("Meetings"));
+        check("record carries the summary",
+            appended0.oneSentenceSummary.equals("Held a first call with Jordan about Fund II."));
+
+        ProposedChange lastContact0 = proposalFor(context0, 4, "Last Contact Date");
+        check("last contact staged", lastContact0 != null);
+        check("last contact is the interaction date", lastContact0.afterValue.equals("2026-03-04"));
+
+        check("no writes performed while staging", port0.writes.isEmpty());
+
+        // The existing history line survives above the size cap, below the new one.
+        FakeAskSheetPort port1 = seededPort();
+        AskContext context1 = buildContext(session0, port1, new FakeAnalysisPort("Meetings", "Second call held."));
+        recordTool0.executor.execute(argsForRecord(2, "Second call with Sam.", "2026-03-04"), context1);
+
+        ProposedChange history1 = proposalFor(context1, 2, "Interaction History");
+        check("existing history retained", history1 != null
+            && history1.afterValue.startsWith("2026-03-04: Second call held.")
+            && history1.afterValue.contains("2026-01-05: Intro email sent"));
+    }
+
+    // (j) a free-text "label" from the analysis (the old failure mode: a status cell
+    // reading "Meeting held - interested in...") never reaches a staged value; it
+    // falls back to the same default intake uses.
+    private static void testRecordInteractionForcesAPredesignedLabel() throws Exception
+    {
+        FakeAskSheetPort port0 = seededPort();
+        SessionContext session0 = seededSession();
+
+        FakeAnalysisPort analysis0 = new FakeAnalysisPort(
+            "Meeting held - interested in Fund II", "Call held with Jordan.");
+
+        AskContext context0 = buildContext(session0, port0, analysis0);
+
+        AskToolSpec recordTool0 = AskToolRegistry.getToolByName("record_interaction");
+        recordTool0.executor.execute(argsForRecord(4, "Call with Jordan.", "2026-03-04"), context0);
+
+        for (ProposedChange change0 : context0.proposals)
+        {
+            check("invented label never staged into " + change0.column,
+                !change0.afterValue.contains("Meeting held - interested in Fund II"));
+        }
+
+        ProposedChange status0 = proposalFor(context0, 4, "Conversation Status");
+        check("status not promoted by an invalid label", status0 == null);
+
+        ProposedChange records0 = proposalFor(context0, 4, "Interaction Records");
+        check("records staged with the fallback label", records0 != null);
+
+        JSONArray recordArray0 = InteractionRecord.extractRecordsArray(records0.afterValue);
+        InteractionRecord appended0 = InteractionRecord.fromJSON(recordArray0.getJSONObject(0));
+        check("record label fell back to Reached Out", appended0.conversationLabel.equals("Reached Out"));
+    }
+
+    // (k) the same path driven through the whole agent: one record_interaction call
+    // returns staged proposals and performs zero writes.
+    private static void testRecordInteractionThroughAgentWritesNothing() throws Exception
+    {
+        FakeAskSheetPort port0 = seededPort();
+        SessionContext session0 = seededSession();
+
+        FakeAskLlmPort llm0 = new FakeAskLlmPort();
+        llm0.scriptFunctionCall("record_interaction",
+            "{\"row\":4,\"interactionText\":\"Met Jordan for coffee, he asked for the data room.\",\"date\":\"2026-03-04\"}");
+        llm0.scriptFinalAnswer("I've staged the interaction for your review.");
+
+        AskAgent agent0 = new AskAgent(
+            session0, port0, llm0, new FakeAnalysisPort("Meetings", "Met Jordan and he asked for the data room."));
+
+        AskResult result0 = agent0.ask("record that I met Jordan for coffee");
+
+        check("four proposals returned", result0.proposals.size() == 4);
+        check("no writes performed", port0.writes.isEmpty());
+    }
+
+    private static ProposedChange proposalFor(AskContext context0, int row0, String column0)
+    {
+        for (ProposedChange change0 : context0.proposals)
+        {
+            if (change0.row == row0 && change0.column.equals(column0))
+            {
+                return change0;
+            }
+        }
+
+        return null;
+    }
+
     // ------------------------------------------------------------------------
     // FIXTURES
     // ------------------------------------------------------------------------
@@ -209,9 +378,10 @@ public class AskAgentTestMain
     {
         FakeAskSheetPort port0 = new FakeAskSheetPort(HEADERS0);
 
-        port0.addRow("Acme Ventures", "Sam", "Lee", "Meetings", "note1");
-        port0.addRow("Beta Capital", "Dana", "Kim", "Rejected", "note2");
-        port0.addRow("Gamma Fund", "Jordan", "Wu", "Meetings", "note3");
+        port0.addRow("Acme Ventures", "Sam", "Lee", "Meetings", "note1",
+            "2026-01-05: Intro email sent", "", "2026-01-05");
+        port0.addRow("Beta Capital", "Dana", "Kim", "Rejected", "note2", "", "", "");
+        port0.addRow("Gamma Fund", "Jordan", "Wu", "Reached Out", "note3", "", "", "");
 
         return port0;
     }
@@ -221,11 +391,23 @@ public class AskAgentTestMain
         CRMSchemaConfig config0 = new CRMSchemaConfig("cfg1", "user1", "Test Fund", "sheet1");
         config0.setCol("mainTabFundNameCol", "Fund Name");
         config0.setCol("mainTabContact1FirstNameCol", "Contact 1 First Name");
+        config0.setCol("mainTabStatusCol", "Conversation Status");
+        config0.setCol("mainTabInteractionHistoryCol", "Interaction History");
+        config0.setCol("mainTabInteractionRecordsCol", "Interaction Records");
+        config0.setCol("mainTabLastContactDateCol", "Last Contact Date");
 
         return new SessionContext(null, config0);
     }
 
     private static AskContext buildContext(SessionContext session0, FakeAskSheetPort port0) throws Exception
+    {
+        return buildContext(session0, port0, null);
+    }
+
+    private static AskContext buildContext(
+        SessionContext session0,
+        FakeAskSheetPort port0,
+        InteractionAnalysisPort analysisPort0) throws Exception
     {
         HashMap<String, Integer> headerMap0 = port0.headerMap();
 
@@ -234,7 +416,8 @@ public class AskAgentTestMain
             port0,
             headerMap0,
             session0.config.getCol("mainTabFundNameCol"),
-            session0.config.getCol("mainTabContact1FirstNameCol")
+            session0.config.getCol("mainTabContact1FirstNameCol"),
+            analysisPort0
         );
     }
 
@@ -242,6 +425,15 @@ public class AskAgentTestMain
     {
         JSONObject args0 = new JSONObject();
         args0.put("query", query0);
+        return args0;
+    }
+
+    private static JSONObject argsForRecord(int row0, String interactionText0, String date0)
+    {
+        JSONObject args0 = new JSONObject();
+        args0.put("row", row0);
+        args0.put("interactionText", interactionText0);
+        args0.put("date", date0);
         return args0;
     }
 
@@ -436,6 +628,45 @@ public class AskAgentTestMain
             }
 
             return script.get(callIndex++);
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // FAKE INTERACTION ANALYSIS PORT (stands in for the intake OpenAI call)
+    // ------------------------------------------------------------------------
+
+    private static class FakeAnalysisPort implements InteractionAnalysisPort
+    {
+        private final String label;
+        private final String summary;
+
+        int callCount = 0;
+        String lastText = "";
+
+        FakeAnalysisPort(String label0, String summary0)
+        {
+            this.label = label0;
+            this.summary = summary0;
+        }
+
+        @Override
+        public JSONObject analyze(String interactionText0)
+        {
+            callCount++;
+            lastText = interactionText0;
+
+            JSONObject result0 = new JSONObject();
+            result0.put("conversationLabel", label);
+            result0.put("oneSentenceSummary", summary);
+            result0.put("direction", "OUTBOUND");
+            result0.put("type", "CALL");
+            result0.put("keyTopicsDiscussed", new JSONArray().put("Fund II"));
+            result0.put("lpQuestionsAsked", new JSONArray());
+            result0.put("commitmentsMadeByGP", new JSONArray().put("Send the deck"));
+            result0.put("lpSentiment", "POSITIVE");
+            result0.put("relationshipSignals", new JSONArray());
+
+            return result0;
         }
     }
 }

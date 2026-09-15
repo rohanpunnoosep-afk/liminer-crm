@@ -20,6 +20,8 @@ import org.json.JSONObject;
  *                             outstandingCommitments checklist array
  *   - callPreparation       : GPT pass-1 strategy synthesis
  *   - executiveSummary      : GPT pass-2 5-7 sentence paragraph
+ *   - citations             : the numbered source registry the [n] markers in those two
+ *                             GPT outputs resolve against (see BriefCitations)
  *
  * A blank Last Brief Generated date is the "not yet briefed" signal that drives
  * eligibility and re-runs (same idea as Relationship Summary's blank-date gate).
@@ -35,6 +37,10 @@ public class InvestorBriefJson
     public JSONObject relationshipSummary;    // interests / sentiment / arc / commitments
     public JSONObject callPreparation;        // GPT pass-1 strategy synthesis
     public String     executiveSummary;       // GPT pass-2 paragraph
+    // The numbered source registry. Built deterministically from the upstream JSON blobs
+    // BEFORE either GPT pass, so a [n] marker in callPreparation/executiveSummary always
+    // resolves to a URL the model did not author. Order is the numbering: entry i is [i+1].
+    public JSONArray  citations;
     public String     status;                 // COMPLETE | FAILED
     public String     briefJson;              // full serialized brief (truncated)
 
@@ -46,6 +52,7 @@ public class InvestorBriefJson
         this.relationshipSummary = new JSONObject();
         this.callPreparation = new JSONObject();
         this.executiveSummary = "";
+        this.citations = new JSONArray();
         this.status = STATUS_FAILED;
         this.briefJson = "{}";
     }
@@ -61,6 +68,7 @@ public class InvestorBriefJson
         obj.put("relationshipSummary", relationshipSummary == null ? new JSONObject() : relationshipSummary);
         obj.put("callPreparation", callPreparation == null ? new JSONObject() : callPreparation);
         obj.put("executiveSummary", safe(executiveSummary));
+        obj.put("citations", citations == null ? new JSONArray() : citations);
         return obj;
     }
 

@@ -3770,11 +3770,16 @@ public class BasicBackgroundChecker
             obj0.put("value", "");
             obj0.put("confidence", 0.0);
             obj0.put("source_url", "");
+            obj0.put("evidence", "");
             return obj0;
         }
         obj0.put("value", truncate(safe(field0.value), 5000));
         obj0.put("confidence", field0.confidence);
         obj0.put("source_url", safe(field0.sourceUrl));
+        // How this field was resolved ("from LinkedIn company page", "bio-page
+        // fallback"). It is set on nearly every write and was being dropped here, so
+        // the Investor Brief could cite the URL but never say what it was evidence of.
+        obj0.put("evidence", truncate(safe(field0.evidence), 500));
         return obj0;
     }
 

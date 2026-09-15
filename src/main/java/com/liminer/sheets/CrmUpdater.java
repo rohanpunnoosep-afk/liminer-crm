@@ -585,7 +585,9 @@ public class CrmUpdater
 
         if (shouldUpdateStatus(
             baseUpdate0[UPDATE_CONVERSATION_LABEL0],
-            incomingUpdate0[UPDATE_CONVERSATION_LABEL0]))
+            incomingUpdate0[UPDATE_CONVERSATION_LABEL0],
+            baseUpdate0[UPDATE_TIMESTAMP0],
+            incomingUpdate0[UPDATE_TIMESTAMP0]))
         {
             baseUpdate0[UPDATE_CONVERSATION_LABEL0] = incomingUpdate0[UPDATE_CONVERSATION_LABEL0];
         }
@@ -709,7 +711,9 @@ public class CrmUpdater
 
         if (shouldUpdateStatus(
             crmRow0[CRM_STATUS0],
-            incomingUpdate0[UPDATE_CONVERSATION_LABEL0]))
+            incomingUpdate0[UPDATE_CONVERSATION_LABEL0],
+            crmRow0[CRM_LAST_CONTACT_DATE0],
+            incomingUpdate0[UPDATE_TIMESTAMP0]))
         {
             crmRow0[CRM_STATUS0] = incomingUpdate0[UPDATE_CONVERSATION_LABEL0];
             changed0 = true;
@@ -1092,7 +1096,10 @@ public class CrmUpdater
         return false;
     }
 
-    private static String prependInteractionHistory(
+    // Pure value computation (no sheet write), so the ask flow's staging copy
+    // (AskInteractionStager) can derive the same "after" value it would have
+    // written, without writing it.
+    public static String prependInteractionHistory(
         String currentHistory0,
         String timestamp0,
         String conversationSummary0)
@@ -1194,22 +1201,68 @@ public class CrmUpdater
         return LocalDate.now().toString();
     }
 
-    private static boolean shouldUpdateStatus(String currentStatus0, String newStatus0)
+    // Pure predicate (no sheet write) -- shared with the ask staging copy.
+    //
+    // Rejected is NOT an absorbing state. An allocator who passed for lack of dry
+    // powder can raise a new fund or find more capital, and the conversation restarts.
+    // So First Interest and above overwrite Rejected -- but only when the incoming
+    // interaction is not older than the row's last contact, otherwise an out-of-order
+    // intake batch (shouldUpdateStatus is rank-based, not time-ordered) could undo a
+    // live rejection with a stale email. Reached Out never revives: a fresh outbound
+    // to someone who already passed is not a signal that they came back.
+    public static final int REVIVE_REJECTED_MIN_RANK0 = 2;   // First Interest
+
+    public static boolean shouldUpdateStatus(String currentStatus0, String newStatus0)
+    {
+        return shouldUpdateStatus(currentStatus0, newStatus0, null, null);
+    }
+
+    public static boolean shouldUpdateStatus(
+        String currentStatus0,
+        String newStatus0,
+        String currentTimestamp0,
+        String newTimestamp0)
     {
         if (isBlank(newStatus0))
         {
             return false;
         }
 
-        if (newStatus0.equals("Rejected"))
+        String current0 = currentStatus0 == null ? "" : currentStatus0.trim();
+        String next0 = newStatus0.trim();
+
+        if (current0.equals("Rejected"))
+        {
+            if (getStatusRank(next0) < REVIVE_REJECTED_MIN_RANK0
+                || next0.equals("Rejected"))
+            {
+                return false;
+            }
+
+            return isNotOlderThan(newTimestamp0, currentTimestamp0);
+        }
+
+        if (next0.equals("Rejected"))
         {
             return true;
         }
 
-        int currentRank0 = getStatusRank(currentStatus0);
-        int newRank0 = getStatusRank(newStatus0);
+        return getStatusRank(next0) > getStatusRank(current0);
+    }
 
-        return newRank0 > currentRank0;
+    // Unknown ordering allows the revival: the caller had no usable timestamp, and
+    // the rank rule is the only signal left.
+    private static boolean isNotOlderThan(String newTimestamp0, String currentTimestamp0)
+    {
+        LocalDateTime new0 = parseTimestamp(newTimestamp0);
+        LocalDateTime current0 = parseTimestamp(currentTimestamp0);
+
+        if (new0 == null || current0 == null)
+        {
+            return true;
+        }
+
+        return !new0.isBefore(current0);
     }
 
     private static int getStatusRank(String status0)
@@ -1599,7 +1652,8 @@ public class CrmUpdater
     // Merges the incoming interaction record(s) into the stored "Full Interaction
     // Record" wrapper: { asOfDate, records:[...] }. Tolerates a legacy bare-array
     // cell (auto-migrated on read) and refreshes asOfDate to today on every append.
-    private static String appendInteractionRecords(
+    // Pure value computation (no sheet write) -- shared with the ask staging copy.
+    public static String appendInteractionRecords(
         String existingRecordsJson0,
         String incomingRecordsJson0)
     {

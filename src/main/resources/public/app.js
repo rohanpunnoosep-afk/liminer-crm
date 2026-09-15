@@ -815,6 +815,8 @@ function renderAskProposals(proposals) {
   const rowsEl = $("askProposalRows");
   rowsEl.textContent = "";
 
+  const cells = [];
+
   proposals.forEach((proposal) => {
     const tr = document.createElement("tr");
 
@@ -826,14 +828,9 @@ function renderAskProposals(proposals) {
       proposal.afterValue,
     ].forEach((rawValue) => {
       const td = document.createElement("td");
-      const text = askCellText(rawValue);
-      if (text.length > 300) {
-        td.textContent = text.slice(0, 300) + "…";
-        td.title = text;
-      } else {
-        td.textContent = text;
-      }
+      td.appendChild(buildAskProposalCell(rawValue));
       tr.appendChild(td);
+      cells.push(td.firstChild);
     });
 
     rowsEl.appendChild(tr);
@@ -841,6 +838,67 @@ function renderAskProposals(proposals) {
 
   $("askProposalSummary").textContent = `This will change ${proposals.length} cell(s) in your CRM.`;
   $("askProposalPanel").hidden = false;
+
+  // The panel has to be visible before the clipped-text measurement below means
+  // anything, so the expand buttons are added after it is unhidden.
+  cells.forEach(addAskCellToggleIfClipped);
+}
+
+// One table cell: the full value (textContent only, never innerHTML), clipped to a
+// single line until expanded.
+function buildAskProposalCell(rawValue) {
+  const cell = document.createElement("div");
+  cell.className = "ask-cell";
+
+  const text = document.createElement("span");
+  text.className = "ask-cell-text";
+  text.textContent = askCellText(rawValue);
+
+  cell.appendChild(text);
+  return cell;
+}
+
+// Adds the small down-arrow only to cells whose value does not fit on its line.
+function addAskCellToggleIfClipped(cell) {
+  const text = cell.querySelector(".ask-cell-text");
+  if (!text) {
+    return;
+  }
+
+  if (text.scrollWidth <= text.clientWidth + 1) {
+    return;
+  }
+
+  text.title = text.textContent;
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "ask-cell-toggle";
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.setAttribute("aria-label", "Show the full value");
+  toggle.textContent = "▾";
+  toggle.addEventListener("click", () => toggleAskCell(cell, toggle));
+
+  cell.appendChild(toggle);
+}
+
+// Expanded: the value wraps inside the column width and grows downward, with its
+// own scrollbar when even the expanded box cannot hold it.
+function toggleAskCell(cell, toggle) {
+  const expanded = cell.classList.toggle("ask-cell-expanded");
+
+  toggle.textContent = expanded ? "▴" : "▾";
+  toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+  toggle.setAttribute("aria-label", expanded ? "Hide the full value" : "Show the full value");
+
+  const text = cell.querySelector(".ask-cell-text");
+  if (text) {
+    if (expanded) {
+      text.removeAttribute("title");
+    } else {
+      text.title = text.textContent;
+    }
+  }
 }
 
 async function acceptAskProposals() {
@@ -1906,13 +1964,16 @@ function renderBriefDetail(brief) {
   const market = brief.marketIntelligence || {};
   const relationship = brief.relationshipSummary || {};
   const callPrep = brief.callPreparation || {};
+  // Registry the [n] markers resolve against. Briefs generated before citations
+  // existed have no array here, and every helper below then renders plain text.
+  const cites = Array.isArray(brief.citations) ? brief.citations : [];
 
   const contactName = [contact.firstName, contact.lastName].filter(Boolean).join(" ").trim();
   $("briefDetailTitle").textContent = contactName || "Investor Brief";
   $("briefDetailMeta").textContent = [contact.fundName, formatBriefDate(brief.asOfDate)].filter(Boolean).join(" — ");
 
   setBriefSection("briefSectionExecutiveSummary", !!brief.executiveSummary, () => {
-    $("briefExecutiveSummaryText").textContent = brief.executiveSummary || "";
+    renderCitedText($("briefExecutiveSummaryText"), brief.executiveSummary || "", cites);
   });
 
   setBriefSection("briefSectionContact", Object.keys(contact).length > 0, () => {
@@ -1925,7 +1986,7 @@ function renderBriefDetail(brief) {
       ["Geography", joinBriefArray(contact.geography)],
       ["Prior Backed Funds", joinBriefArray(contact.priorBackedFunds)],
       ["Investment Thesis", contact.investmentThesis],
-    ]);
+    ], cites);
   });
 
   setBriefSection("briefSectionMarket", Object.keys(market).length > 0, () => {
@@ -1939,7 +2000,7 @@ function renderBriefDetail(brief) {
       ["CIK #", market.cikNumber],
       ["LEI", market.lei],
       ["EIN", market.ein],
-    ]);
+    ], cites);
   });
 
   setBriefSection("briefSectionRelationship", Object.keys(relationship).length > 0, () => {
@@ -1949,11 +2010,15 @@ function renderBriefDetail(brief) {
       ["Sentiment Over Time", relationship.sentimentChangesOverTime],
       ["Narrative Arc", relationship.narrativeArc],
       ["Outstanding Commitments", joinBriefArray(relationship.outstandingCommitments)],
-    ]);
+    ], cites);
   });
 
   setBriefSection("briefSectionCallPrep", Object.keys(callPrep).length > 0, () => {
-    renderCallPrep(callPrep);
+    renderCallPrep(callPrep, cites);
+  });
+
+  setBriefSection("briefSectionSources", cites.length > 0, () => {
+    renderBriefSources(cites);
   });
 
   $("briefDetailPanel").hidden = false;
@@ -1969,7 +2034,7 @@ function setBriefSection(sectionId, hasContent, renderFn) {
   section.hidden = false;
 }
 
-function renderBriefFields(containerId, pairs) {
+function renderBriefFields(containerId, pairs, cites) {
   const dl = $(containerId);
   dl.innerHTML = "";
 
@@ -1978,9 +2043,89 @@ function renderBriefFields(containerId, pairs) {
     const dt = document.createElement("dt");
     dt.textContent = label;
     const dd = document.createElement("dd");
-    dd.textContent = String(value);
+    renderCitedText(dd, String(value), cites);
     dl.appendChild(dt);
     dl.appendChild(dd);
+  });
+}
+
+// Split model-authored prose on [n] markers, rendering each marker that the registry
+// can back as a superscript link and everything else as a text node.
+//
+// Nodes are built with createElement/createTextNode and never innerHTML: the prose is
+// LLM output and the labels come from scraped pages, so neither is trusted markup. The
+// href is safe by construction too -- BriefCitations admits a URL to the registry only
+// if SerpUrls.isAbsoluteHttpUrl accepts it, so no javascript:/data: URL can reach here.
+function renderCitedText(el, text, cites) {
+  el.textContent = "";
+  const list = Array.isArray(cites) ? cites : [];
+  const source = String(text === undefined || text === null ? "" : text);
+
+  if (list.length === 0 || source.indexOf("[") < 0) {
+    el.textContent = source;
+    return;
+  }
+
+  const pattern = /\[(\d+)\]/g;
+  let last = 0;
+  let match;
+  while ((match = pattern.exec(source)) !== null) {
+    if (match.index > last) {
+      el.appendChild(document.createTextNode(source.slice(last, match.index)));
+    }
+
+    const cite = findCitation(list, parseInt(match[1], 10));
+    if (cite) {
+      const a = document.createElement("a");
+      a.className = "brief-citation";
+      a.href = cite.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.title = cite.label || cite.url;
+      a.textContent = match[0];
+      el.appendChild(a);
+    } else {
+      // No registry entry: render the marker as the plain text it is, never as a link.
+      el.appendChild(document.createTextNode(match[0]));
+    }
+    last = pattern.lastIndex;
+  }
+
+  if (last < source.length) {
+    el.appendChild(document.createTextNode(source.slice(last)));
+  }
+}
+
+function findCitation(cites, index) {
+  if (!index || index < 1) return null;
+  return cites.find((c, i) => c && (c.index || i + 1) === index && c.url) || null;
+}
+
+function renderBriefSources(cites) {
+  const ol = $("briefSourcesList");
+  ol.innerHTML = "";
+
+  cites.forEach((cite, i) => {
+    if (!cite || !cite.url) return;
+    const li = document.createElement("li");
+    li.value = cite.index || i + 1;
+
+    const a = document.createElement("a");
+    a.href = cite.url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = cite.label || cite.url;
+    li.appendChild(a);
+
+    const asOf = formatBriefDate(cite.asOfDate);
+    if (asOf) {
+      const span = document.createElement("span");
+      span.className = "brief-source-meta";
+      span.textContent = ` — as of ${asOf}`;
+      li.appendChild(span);
+    }
+
+    ol.appendChild(li);
   });
 }
 
@@ -1988,14 +2133,14 @@ function joinBriefArray(arr) {
   return Array.isArray(arr) ? arr.filter(Boolean).join(", ") : "";
 }
 
-function renderCallPrep(callPrep) {
+function renderCallPrep(callPrep, cites) {
   const container = $("briefCallPrepBlocks");
   container.innerHTML = "";
 
-  addCallPrepList(container, "Talking Points", callPrep.talkingPoints);
-  addCallPrepList(container, "Suggested Questions", callPrep.suggestedQuestions);
-  addCallPrepList(container, "Relationship-Building Opportunities", callPrep.relationshipBuildingOpportunities);
-  addCallPrepList(container, "Recommended Next Steps", callPrep.recommendedNextSteps);
+  addCallPrepList(container, "Talking Points", callPrep.talkingPoints, cites);
+  addCallPrepList(container, "Suggested Questions", callPrep.suggestedQuestions, cites);
+  addCallPrepList(container, "Relationship-Building Opportunities", callPrep.relationshipBuildingOpportunities, cites);
+  addCallPrepList(container, "Recommended Next Steps", callPrep.recommendedNextSteps, cites);
 
   const objections = Array.isArray(callPrep.anticipatedObjections) ? callPrep.anticipatedObjections : [];
   if (objections.length > 0) {
@@ -2009,9 +2154,9 @@ function renderCallPrep(callPrep) {
       if (o && typeof o === "object") {
         const objection = o.objection || "";
         const navigation = o.navigation || "";
-        li.textContent = navigation ? `${objection} → ${navigation}` : objection;
+        renderCitedText(li, navigation ? `${objection} → ${navigation}` : objection, cites);
       } else {
-        li.textContent = String(o);
+        renderCitedText(li, String(o), cites);
       }
       ul.appendChild(li);
     });
@@ -2019,7 +2164,7 @@ function renderCallPrep(callPrep) {
   }
 }
 
-function addCallPrepList(container, title, items) {
+function addCallPrepList(container, title, items, cites) {
   if (!Array.isArray(items) || items.length === 0) return;
 
   const heading = document.createElement("h4");
@@ -2029,7 +2174,7 @@ function addCallPrepList(container, title, items) {
   const ul = document.createElement("ul");
   items.forEach((item) => {
     const li = document.createElement("li");
-    li.textContent = String(item);
+    renderCitedText(li, String(item), cites);
     ul.appendChild(li);
   });
   container.appendChild(ul);

@@ -161,8 +161,29 @@ public class AskFrontendTestMain
             check("app.js reveals Documents after a brief job", appJs.contains("BRIEF_WORKFLOW_IDS")
                 && appJs.contains("outputFollowup"));
 
+            check("app.js builds each proposal cell through one builder",
+                askRegion.contains("buildAskProposalCell"));
+            check("app.js only adds the expand arrow to clipped cells",
+                askRegion.contains("addAskCellToggleIfClipped") && askRegion.contains("scrollWidth"));
+            check("app.js toggles the expanded state via a class, not inline style",
+                askRegion.contains("classList.toggle(\"ask-cell-expanded\")"));
+            check("app.js marks the arrow's expanded state for screen readers",
+                askRegion.contains("aria-expanded"));
+            check("app.js measures only after the panel is visible",
+                askRegion.indexOf("askProposalPanel\").hidden = false")
+                    < askRegion.indexOf("cells.forEach(addAskCellToggleIfClipped)"));
+            check("app.js no longer truncates long cell values",
+                !askRegion.contains("text.slice(0, 300)"));
+
             String stylesCss = get("/styles.css");
             check("styles.css has .ask-panel rule", stylesCss.contains(".ask-panel"));
+            check("styles.css clips a collapsed cell to one line",
+                stylesCss.contains(".ask-cell-text") && stylesCss.contains("text-overflow: ellipsis"));
+            check("styles.css wraps and scrolls an expanded cell",
+                stylesCss.contains(".ask-cell-expanded .ask-cell-text")
+                    && stylesCss.contains("max-height: 7.5em")
+                    && stylesCss.contains("overflow-y: auto"));
+            check("styles.css styles the expand arrow", stylesCss.contains(".ask-cell-toggle"));
 
             String tokenA = login("userA@example.com");
             check("login token non-empty", tokenA != null && tokenA.length() > 0);

@@ -809,10 +809,61 @@ input[type="text"]:focus {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   text-align: left;
-  white-space: nowrap;
   max-width: 240px;
+  vertical-align: top;
+}
+
+.ask-proposal-table th {
+  white-space: nowrap;
+}
+
+/* Collapsed: one clipped line plus the expand arrow. The width cap lives here
+   rather than on the td, because auto table layout ignores a cell's max-width and
+   would widen the column to fit the whole unwrapped value. */
+.ask-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 240px;
+}
+
+.ask-cell-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Expanded: wraps within the column width, grows downward, and scrolls if the
+   value is longer than the expanded box. */
+.ask-cell-expanded .ask-cell-text {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  overflow-x: hidden;
+  overflow-y: auto;
+  max-height: 7.5em;
+  padding-right: 4px;
+  text-overflow: clip;
+}
+
+.ask-cell-toggle {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ask-cell-toggle:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
 }
 
 .ask-proposal-table thead th {
@@ -1076,6 +1127,42 @@ input[type="text"]:focus {
   margin-bottom: 4px;
 }
 
+/* Inline [n] citation marker. Superscripted and kept small so it annotates the
+   sentence it follows without breaking the reading line. */
+.brief-citation {
+  color: var(--accent);
+  font-size: 10px;
+  vertical-align: super;
+  line-height: 0;
+  text-decoration: none;
+  margin-left: 1px;
+  white-space: nowrap;
+}
+
+.brief-citation:hover {
+  color: var(--accent-dark);
+  text-decoration: underline;
+}
+
+.brief-sources {
+  margin: 0;
+  padding-left: 22px;
+  font-size: 12px;
+}
+
+.brief-sources li {
+  margin-bottom: 5px;
+  overflow-wrap: anywhere;
+}
+
+.brief-sources a {
+  color: var(--accent);
+}
+
+.brief-source-meta {
+  color: var(--text-muted);
+}
+
 @media (max-width: 480px) {
   .brief-fields {
     grid-template-columns: 1fr;
@@ -1084,6 +1171,10 @@ input[type="text"]:focus {
   .brief-row {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .brief-sources {
+    padding-left: 18px;
   }
 }
 
